@@ -1,0 +1,4 @@
+[package]
+name = "graphql-codegen-rust-cli"
+version = "0.0.1"
+edition.workspace = true
