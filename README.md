@@ -13,13 +13,15 @@ Port and reimplement GraphQL Code Generator in Rust to achieve:
 ## Implementation Progress
 
 ### Phase 1: Core Infrastructure
+
 - [ ] Schema parser (GraphQL SDL)
 - [ ] AST node types
 - [ ] Document parser
-- [  ] CLI
-    - [x] "init" sub-command
-    - [ ] default generation behavior
-    - [ ] "verify" sub-comand *NEW FEATURE 
+
+#### CLI
+- [x] "init" sub-command
+- [ ] default generation behavior
+- [ ] "verify" sub-comand *NEW FEATURE 
 
 ### Phase 2: Plugin System
 - [ ] Plugin trait definition
