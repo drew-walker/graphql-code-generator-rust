@@ -1,5 +1,5 @@
 {
-  "name": "graphql-codegen-rust-dev-test",
+  "name": "graphql-code-generator-rust",
   "private": true,
   "scripts": {
     "prettier": "prettier --cache --write --list-different .",

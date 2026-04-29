@@ -8,6 +8,7 @@
 
 - Prioritize upstream parity first: structure, module boundaries, function responsibilities, and generated output shape.
 - Keep naming aligned with upstream semantics; apply Rust conventions only where required (for example: snake_case, module file naming).
+- Prefer strict symbol-name parity with upstream (for example: `execShellCommand` -> `exec_shell_command`, not renamed synonyms).
 - Validate parity using `dev-test` generated fixtures before considering a task complete.
 - Do not run destructive git commands.
 - Do not create commits unless explicitly requested.

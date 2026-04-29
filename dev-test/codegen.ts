@@ -1,7 +1,11 @@
 import type { CodegenConfig } from '@graphql-codegen/cli';
 
 const config: CodegenConfig = {
-  // hooks: { afterAllFileWrite: ['prettier --write'] },
+  hooks: {
+    afterAllFileWrite: [
+      'prettier --config ./prettier.config.mjs --write',
+    ],
+  },
   emitLegacyCommonJSImports: false,
   generates: {
     // './dev-test/test-schema/resolvers-types.ts': {
