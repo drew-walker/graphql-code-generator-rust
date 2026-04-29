@@ -145,6 +145,10 @@ impl<'a> TsVisitor<'a> {
 
     /// Mirrors `visitor.scalarsDefinition` — transitional fixed block; will move to base visitor parity.
     pub fn scalars_definition(&self) -> String {
+        if self.config.only_enums {
+            return String::new();
+        }
+
         let mut s = String::from(
             "/** All built-in and custom scalars, mapped to their actual values */\nexport type Scalars = {\n",
         );
@@ -184,23 +188,29 @@ impl<'a> TsVisitor<'a> {
             self.emit_enum(&mut out, t)?;
         }
 
-        let mut objects: Vec<&Value> = types
-            .iter()
-            .filter(|t| t.get("kind").and_then(|k| k.as_str()) == Some("OBJECT"))
-            .filter(|t| {
-                t.get("name")
-                    .and_then(|n| n.as_str())
-                    .map(|n| !n.starts_with("__"))
-                    .unwrap_or(false)
-            })
-            .collect();
-        objects.sort_by_key(|t| t.get("name").and_then(|n| n.as_str()).unwrap_or(""));
+        if !self.config.only_enums {
+            let mut objects: Vec<&Value> = types
+                .iter()
+                .filter(|t| t.get("kind").and_then(|k| k.as_str()) == Some("OBJECT"))
+                .filter(|t| {
+                    t.get("name")
+                        .and_then(|n| n.as_str())
+                        .map(|n| !n.starts_with("__"))
+                        .unwrap_or(false)
+                })
+                .collect();
+            objects.sort_by_key(|t| t.get("name").and_then(|n| n.as_str()).unwrap_or(""));
 
-        for t in &objects {
-            self.emit_object_type(&mut out, t)?;
+            for t in &objects {
+                self.emit_object_type(&mut out, t)?;
+            }
         }
 
-        Ok(out)
+        if out.is_empty() {
+            return Ok(out);
+        }
+
+        Ok(format!("{}\n", out.trim_end_matches('\n')))
     }
 
     fn emit_enum(&self, out: &mut String, t: &Value) -> Result<()> {
@@ -215,8 +225,24 @@ impl<'a> TsVisitor<'a> {
 
         let overrides = &self.schema_input.enum_internal_values;
 
+        if let Some(description) = t.get("description").and_then(|d| d.as_str()) {
+            out.push_str("/** ");
+            out.push_str(description);
+            out.push_str(" */\n");
+        }
+
         out.push_str(&format!("export enum {name} {{\n"));
-        for ev in values {
+
+        let mut enum_values: Vec<&Value> = values.iter().collect();
+        enum_values.sort_by_key(|ev| ev.get("name").and_then(|n| n.as_str()).unwrap_or(""));
+
+        for ev in enum_values {
+            if let Some(description) = ev.get("description").and_then(|d| d.as_str()) {
+                out.push_str("  /** ");
+                out.push_str(description);
+                out.push_str(" */\n");
+            }
+
             let gql_name = ev
                 .get("name")
                 .and_then(|n| n.as_str())
@@ -247,20 +273,58 @@ impl<'a> TsVisitor<'a> {
         out.push_str(name);
         out.push_str("';\n");
 
+        let mut arg_types: Vec<String> = Vec::new();
         if let Some(fields) = fields {
-            for f in fields {
+            let mut sorted_fields: Vec<&Value> = fields.iter().collect();
+            sorted_fields.sort_by_key(|f| f.get("name").and_then(|n| n.as_str()).unwrap_or(""));
+
+            for f in sorted_fields {
                 let fname = f
                     .get("name")
                     .and_then(|n| n.as_str())
                     .context("field without name")?;
                 let ftype = f.get("type").context("field without type")?;
-                let (optional, ts) = graphql_field_type_to_ts_field(ftype);
-                let q = if optional { "?" } else { "" };
+                let (optional, ts) = graphql_output_field_type_to_ts_field(ftype);
+                let q = if optional && !self.config.avoid_optionals {
+                    "?"
+                } else {
+                    ""
+                };
                 out.push_str(&format!("  {fname}{q}: {ts};\n"));
+
+                let args = f.get("args").and_then(|a| a.as_array());
+                if let Some(args) = args
+                    && !args.is_empty()
+                {
+                    let mut args_block =
+                        format!("export type {name}{}Args = {{\n", to_pascal_case(fname));
+                    for arg in args {
+                        let arg_name = arg
+                            .get("name")
+                            .and_then(|n| n.as_str())
+                            .context("arg without name")?;
+                        let arg_type = arg.get("type").context("arg without type")?;
+                        let (arg_optional, arg_ts) = graphql_input_field_type_to_ts_field(arg_type);
+                        let arg_q = if arg_optional && !self.config.avoid_optionals {
+                            "?"
+                        } else {
+                            ""
+                        };
+                        args_block.push_str(&format!("  {arg_name}{arg_q}: {arg_ts};\n"));
+                    }
+                    args_block.push_str("};\n");
+                    arg_types.push(args_block);
+                }
             }
         }
 
-        out.push_str("};\n");
+        out.push_str("};\n\n");
+        if !arg_types.is_empty() {
+            for arg_type in &arg_types {
+                out.push_str(arg_type);
+            }
+            out.push('\n');
+        }
         Ok(())
     }
 }
@@ -281,25 +345,40 @@ fn graphql_enum_value_to_ts_key(name: &str) -> String {
         .collect()
 }
 
-fn graphql_field_type_to_ts_field(t: &Value) -> (bool, String) {
+fn graphql_output_field_type_to_ts_field(t: &Value) -> (bool, String) {
     if t.get("kind").and_then(|k| k.as_str()) == Some("NON_NULL") {
         (
             false,
-            type_non_null(t.get("ofType").expect("NON_NULL.ofType")),
+            output_type_non_null(t.get("ofType").expect("NON_NULL.ofType")),
         )
     } else {
-        (true, format!("Maybe<{}>", type_non_null(t)))
+        (true, format!("Maybe<{}>", output_type_non_null(t)))
     }
 }
 
-fn type_non_null(t: &Value) -> String {
+fn graphql_input_field_type_to_ts_field(t: &Value) -> (bool, String) {
+    if t.get("kind").and_then(|k| k.as_str()) == Some("NON_NULL") {
+        (
+            false,
+            input_type_non_null(t.get("ofType").expect("NON_NULL.ofType")),
+        )
+    } else {
+        (true, format!("InputMaybe<{}>", input_type_non_null(t)))
+    }
+}
+
+fn output_type_non_null(t: &Value) -> String {
     match t.get("kind").and_then(|k| k.as_str()) {
         Some("LIST") => {
             let inner = t.get("ofType").expect("LIST.ofType");
-            format!("Array<{}>", list_element_type(inner))
+            format!("Array<{}>", output_list_element_type(inner))
         }
-        Some("NON_NULL") => type_non_null(t.get("ofType").expect("NON_NULL.ofType")),
-        Some("OBJECT") | Some("ENUM") | Some("SCALAR") | Some("INTERFACE") | Some("UNION") => t
+        Some("NON_NULL") => output_type_non_null(t.get("ofType").expect("NON_NULL.ofType")),
+        Some("SCALAR") => {
+            let scalar = t.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
+            format!("Scalars['{scalar}']['output']")
+        }
+        Some("OBJECT") | Some("ENUM") | Some("INTERFACE") | Some("UNION") => t
             .get("name")
             .and_then(|n| n.as_str())
             .unwrap_or("unknown")
@@ -308,12 +387,49 @@ fn type_non_null(t: &Value) -> String {
     }
 }
 
-fn list_element_type(t: &Value) -> String {
+fn input_type_non_null(t: &Value) -> String {
+    match t.get("kind").and_then(|k| k.as_str()) {
+        Some("LIST") => {
+            let inner = t.get("ofType").expect("LIST.ofType");
+            format!("Array<{}>", input_list_element_type(inner))
+        }
+        Some("NON_NULL") => input_type_non_null(t.get("ofType").expect("NON_NULL.ofType")),
+        Some("SCALAR") => {
+            let scalar = t.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
+            format!("Scalars['{scalar}']['input']")
+        }
+        Some("OBJECT") | Some("ENUM") | Some("INPUT_OBJECT") => t
+            .get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("unknown")
+            .to_string(),
+        _ => "unknown".to_string(),
+    }
+}
+
+fn output_list_element_type(t: &Value) -> String {
     if t.get("kind").and_then(|k| k.as_str()) == Some("NON_NULL") {
-        type_non_null(t.get("ofType").expect("LIST element NON_NULL.ofType"))
+        output_type_non_null(t.get("ofType").expect("LIST element NON_NULL.ofType"))
     } else {
-        let (_, ts) = graphql_field_type_to_ts_field(t);
+        let (_, ts) = graphql_output_field_type_to_ts_field(t);
         ts
+    }
+}
+
+fn input_list_element_type(t: &Value) -> String {
+    if t.get("kind").and_then(|k| k.as_str()) == Some("NON_NULL") {
+        input_type_non_null(t.get("ofType").expect("LIST element NON_NULL.ofType"))
+    } else {
+        let (_, ts) = graphql_input_field_type_to_ts_field(t);
+        ts
+    }
+}
+
+fn to_pascal_case(name: &str) -> String {
+    let mut chars = name.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(first) => format!("{}{}", first.to_uppercase(), chars.collect::<String>()),
     }
 }
 

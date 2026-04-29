@@ -29,11 +29,11 @@ const config: CodegenConfig = {
     //   schema: './dev-test/test-schema/schema.json',
     //   plugins: ['typescript', 'typescript-resolvers'],
     // },
-    // './dev-test/test-schema/typings.avoidOptionals.ts': {
-    //   schema: './dev-test/test-schema/schema.json',
-    //   config: { avoidOptionals: true },
-    //   plugins: ['typescript'],
-    // },
+    './dev-test/test-schema/typings.avoidOptionals.ts': {
+      schema: './dev-test/test-schema/schema.json',
+      config: { avoidOptionals: true },
+      plugins: ['typescript'],
+    },
     // './dev-test/test-schema/typings.wrapped.ts': {
     //   schema: './dev-test/test-schema/schema.json',
     //   plugins: [
@@ -47,11 +47,11 @@ const config: CodegenConfig = {
     //   schema: process.env.SCHEMA_PATH,
     //   plugins: ['typescript'],
     // },
-    // './dev-test/test-schema/typings.immutableTypes.ts': {
-    //   schema: './dev-test/test-schema/schema.json',
-    //   config: { imutableTypes: true },
-    //   plugins: ['typescript'],
-    // },
+    './dev-test/test-schema/typings.immutableTypes.ts': {
+      schema: './dev-test/test-schema/schema.json',
+      config: { imutableTypes: true },
+      plugins: ['typescript'],
+    },
     './dev-test/test-schema/typings.enum.ts': {
       schema: './dev-test/test-schema/schema-object.js',
       plugins: ['typescript'],
@@ -150,12 +150,12 @@ const config: CodegenConfig = {
   //     config: { preResolveTypes: true },
   //     plugins: ['typescript', 'typescript-operations'],
   //   },
-  //   './dev-test/star-wars/types.OnlyEnums.ts': {
-  //     schema: './dev-test/star-wars/schema.json',
-  //     documents: './dev-test/star-wars/**/*.graphql',
-  //     config: { onlyEnums: true },
-  //     plugins: ['typescript'],
-  //   },
+    './dev-test/star-wars/types.OnlyEnums.ts': {
+      schema: './dev-test/star-wars/schema.json',
+      documents: './dev-test/star-wars/**/*.graphql',
+      config: { onlyEnums: true },
+      plugins: ['typescript'],
+    },
   //   './dev-test/star-wars/types.preResolveTypes.onlyOperationTypes.ts': {
   //     schema: './dev-test/star-wars/schema.json',
   //     documents: './dev-test/star-wars/**/*.graphql',

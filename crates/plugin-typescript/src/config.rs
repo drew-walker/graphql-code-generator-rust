@@ -20,6 +20,8 @@ pub struct TypeScriptPluginConfig {
     #[serde(default)]
     pub no_export: Option<bool>,
     #[serde(default)]
+    pub avoid_optionals: Option<bool>,
+    #[serde(default)]
     pub wrap_field_definitions: Option<bool>,
     #[serde(default)]
     pub wrap_entire_field_definitions: Option<bool>,
@@ -39,6 +41,7 @@ pub struct TypeScriptPluginParsedConfig {
     pub input_maybe_value: String,
     pub only_enums: bool,
     pub no_export: bool,
+    pub avoid_optionals: bool,
     pub wrap_field_definitions: bool,
     pub wrap_entire_field_definitions: bool,
 }
@@ -56,6 +59,7 @@ impl TypeScriptPluginParsedConfig {
             input_maybe_value,
             only_enums: get_config_value(raw.only_enums.as_ref(), false),
             no_export: get_config_value(raw.no_export.as_ref(), false),
+            avoid_optionals: get_config_value(raw.avoid_optionals.as_ref(), false),
             wrap_field_definitions: get_config_value(raw.wrap_field_definitions.as_ref(), false),
             wrap_entire_field_definitions: get_config_value(
                 raw.wrap_entire_field_definitions.as_ref(),
