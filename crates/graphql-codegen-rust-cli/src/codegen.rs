@@ -22,21 +22,52 @@ pub async fn execute_codegen(context: &mut CodegenContext) -> ExecuteCodegenOutp
     };
 
     for (filename, output_config) in generates {
-        // TODO: implement schema loading, document loading, and plugin execution
-        // mirroring the per-output task pipeline in TS executeCodegen.
-        let content = match std::fs::read_to_string(context.cwd.join(&filename)) {
-            Ok(c) => c,
+        // TS executeCodegen per-output pipeline: load schema → load documents → generate.
+        let mut schema_pointers: Vec<String> = Vec::new();
+        schema_pointers.extend(config.schema.clone());
+        schema_pointers.extend(output_config.schema.clone());
+
+        let schema_input = match context.load_schema(&schema_pointers).await {
+            Ok(s) => s,
             Err(e) => {
                 return ExecuteCodegenOutput {
                     result,
-                    error: Some(anyhow::anyhow!(
-                        "Failed to read output for '{}': {}",
-                        context.cwd.join(&filename).display(),
-                        e
-                    )),
+                    error: Some(e),
                 };
             }
         };
+
+        // TODO: load documents (root + output), presets, plugin map, documentTransforms — TS parity.
+        let _ = (&config.documents, &output_config.documents);
+
+        let mut content = String::new();
+        for plugin_name in &output_config.plugins {
+            match plugin_name.as_str() {
+                "typescript" => {
+                    let ts_config =
+                        plugin_typescript::TypeScriptPluginConfig::from_output_config_map(
+                            &output_config.config,
+                        );
+                    match plugin_typescript::plugin(&schema_input, &[], &ts_config) {
+                        Ok(out) => content = plugin_typescript::merge_plugin_output(&out),
+                        Err(e) => {
+                            return ExecuteCodegenOutput {
+                                result,
+                                error: Some(e),
+                            };
+                        }
+                    }
+                }
+                other => {
+                    return ExecuteCodegenOutput {
+                        result,
+                        error: Some(anyhow::anyhow!(
+                            "Unsupported plugin `{other}` for output `{filename}` (only `typescript` is wired)"
+                        )),
+                    };
+                }
+            }
+        }
 
         result.push(FileOutput {
             filename: filename.to_string(),

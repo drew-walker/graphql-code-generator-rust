@@ -3,6 +3,7 @@ use clap::{ArgAction, Args};
 use std::path::{Path, PathBuf};
 
 use plugin_helpers::profiler::{Profiler, create_noop_profiler, create_profiler};
+use plugin_helpers::schema_input::SchemaGenerationInput;
 use plugin_helpers::types::{Config, PluginContext};
 
 #[derive(Debug, Clone, Default, Args)]
@@ -329,6 +330,11 @@ impl CodegenContext {
     pub fn use_profiler(&mut self) {
         self.profiler = create_profiler();
         self.profiler_output = Some(default_profiler_output_name());
+    }
+
+    /// Mirrors TS `CodegenContext.loadSchema` — returns a Rust-native schema bundle for plugins.
+    pub async fn load_schema(&self, pointers: &[String]) -> Result<SchemaGenerationInput> {
+        crate::load::load_schema_for_pointers(&self.cwd, pointers).await
     }
 
     pub fn get_config(&mut self) -> Config {

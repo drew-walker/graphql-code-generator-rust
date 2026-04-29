@@ -59,6 +59,14 @@ pub struct HooksConfig {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct PluginContext(pub HashMap<String, serde_json::Value>);
 
+/// Mirrors `Types.ComplexPluginOutput` from `@graphql-codegen/plugin-helpers`.
+#[derive(Debug, Clone, Default)]
+pub struct ComplexPluginOutput {
+    pub content: String,
+    pub prepend: Vec<String>,
+    pub append: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct FileOutput {
     pub filename: String,
