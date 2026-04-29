@@ -17,7 +17,7 @@ pub async fn run_cli(cmd: Option<Command>, flags: CliFlags) -> anyhow::Result<i3
         return Ok(0);
     }
 
-    let context = create_context(flags)?;
+    let context = create_context(flags).await?;
     generate(context, true).await?;
     // TODO: Check for checkMode and log if files are stale
     Ok(0)

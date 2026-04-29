@@ -187,10 +187,10 @@ pub async fn generate(input: CodegenContext, save_to_file: bool) -> Result<()> {
         return Ok(());
     }
 
-    let profiled = context
-        .profiler
+    let profiler = context.profiler.clone();
+    let profiled = profiler
         .run(
-            || async { Ok(execute_codegen(&context).await) },
+            || async { Ok(execute_codegen(&mut context).await) },
             "executeCodegen",
         )
         .await?;
