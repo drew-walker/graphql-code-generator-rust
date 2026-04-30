@@ -14,6 +14,8 @@ use graphql_parser::query::{
     Definition, Document, Field, FragmentDefinition, InlineFragment, OperationDefinition,
     Selection, SelectionSet, Type, TypeCondition, Value, VariableDefinition,
 };
+use serde_json::value::Map;
+use serde_json::{Value as JsonValue, json};
 
 pub fn collect_fragments(
     doc: &Document<'static, String>,
@@ -28,6 +30,16 @@ pub fn collect_fragments(
 }
 
 pub fn order_fragments(
+    fragments: &HashMap<String, FragmentDefinition<'static, String>>,
+) -> Vec<String> {
+    // This legacy helper has no stable insertion order (HashMap). Keep it deterministic by sorting.
+    let mut roots: Vec<String> = fragments.keys().cloned().collect();
+    roots.sort();
+    order_fragments_with_roots(&roots, fragments)
+}
+
+pub fn order_fragments_with_roots(
+    roots: &[String],
     fragments: &HashMap<String, FragmentDefinition<'static, String>>,
 ) -> Vec<String> {
     fn deps_for_selection_set(ss: &SelectionSet<'static, String>, out: &mut Vec<String>) {
@@ -53,6 +65,8 @@ pub fn order_fragments(
             return;
         }
         if !visiting.insert(name.to_string()) {
+            // Cycle: upstream `dependency-graph` can handle cycles by returning a best-effort order.
+            // We keep behavior deterministic by short-circuiting.
             return;
         }
         if let Some(f) = fragments.get(name) {
@@ -69,16 +83,13 @@ pub fn order_fragments(
         ordered.push(name.to_string());
     }
 
-    // Deterministic root order (stable output).
-    let mut names: Vec<String> = fragments.keys().cloned().collect();
-    names.sort();
-
     let mut ordered = Vec::new();
     let mut visiting = HashSet::new();
     let mut visited = HashSet::new();
-
-    for n in names {
-        visit(&n, fragments, &mut visiting, &mut visited, &mut ordered);
+    for r in roots {
+        if fragments.contains_key(r) {
+            visit(r, fragments, &mut visiting, &mut visited, &mut ordered);
+        }
     }
     ordered
 }
@@ -100,6 +111,14 @@ pub fn print_document(doc: &Document<'static, String>) -> String {
     out.push_str("  ],\n");
     out.push('}');
     out
+}
+
+/// JSON-stringify style printer, closer to upstream's `JSON.stringify(DocumentNode)` output.
+///
+/// This intentionally emits **compact JSON** (double quotes, quoted keys). Prettier is expected
+/// to normalize it to idiomatic JS object literal formatting.
+pub fn print_document_json(doc: &Document<'static, String>) -> String {
+    serde_json::to_string(&document_to_json(doc)).unwrap_or_else(|_| "{}".to_string())
 }
 
 fn print_definition(def: &Definition<'static, String>) -> String {
@@ -390,38 +409,27 @@ pub fn build_document_with_dependent_fragments(
     root: Definition<'static, String>,
     fragments: &HashMap<String, FragmentDefinition<'static, String>>,
 ) -> Document<'static, String> {
-    fn collect_deps_in_order(
+    fn collect_fragment_spread_names_in_order(
         ss: &SelectionSet<'static, String>,
-        fragments: &HashMap<String, FragmentDefinition<'static, String>>,
-        seen: &mut HashSet<String>,
-        out: &mut Vec<FragmentDefinition<'static, String>>,
+        out: &mut Vec<String>,
     ) {
         for sel in &ss.items {
             match sel {
-                Selection::FragmentSpread(spread) => {
-                    if seen.insert(spread.fragment_name.clone()) {
-                        if let Some(f) = fragments.get(&spread.fragment_name) {
-                            collect_deps_in_order(&f.selection_set, fragments, seen, out);
-                            out.push(f.clone());
-                        }
-                    }
-                }
+                Selection::FragmentSpread(spread) => out.push(spread.fragment_name.clone()),
                 Selection::InlineFragment(inline) => {
-                    collect_deps_in_order(&inline.selection_set, fragments, seen, out);
+                    collect_fragment_spread_names_in_order(&inline.selection_set, out)
                 }
                 Selection::Field(f) => {
-                    collect_deps_in_order(&f.selection_set, fragments, seen, out)
+                    collect_fragment_spread_names_in_order(&f.selection_set, out)
                 }
             }
         }
     }
 
-    let mut deps: Vec<FragmentDefinition<'static, String>> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-
+    let mut root_spreads: Vec<String> = Vec::new();
     match &root {
         Definition::Fragment(f) => {
-            collect_deps_in_order(&f.selection_set, fragments, &mut seen, &mut deps)
+            collect_fragment_spread_names_in_order(&f.selection_set, &mut root_spreads)
         }
         Definition::Operation(op) => {
             let ss = match op {
@@ -430,16 +438,293 @@ pub fn build_document_with_dependent_fragments(
                 OperationDefinition::Subscription(s) => &s.selection_set,
                 OperationDefinition::SelectionSet(ss) => ss,
             };
-            collect_deps_in_order(ss, fragments, &mut seen, &mut deps);
+            collect_fragment_spread_names_in_order(ss, &mut root_spreads);
         }
     }
 
+    // Dedupe root spreads while keeping first-seen order (closer to upstream DepGraph roots).
+    let mut roots: Vec<String> = Vec::new();
+    let mut seen = HashSet::new();
+    for n in root_spreads {
+        if seen.insert(n.clone()) {
+            roots.push(n);
+        }
+    }
+
+    // Topologically order reachable fragments with dependency-before-dependent semantics.
+    let ordered_names = order_fragments_with_roots(&roots, fragments);
     let mut definitions = vec![root];
-    definitions.extend(deps.into_iter().map(Definition::Fragment));
+    for n in ordered_names {
+        if let Some(f) = fragments.get(&n) {
+            definitions.push(Definition::Fragment(f.clone()));
+        }
+    }
     Document { definitions }
 }
 
 // Keep API surface future-proof.
 pub fn validate_typed_document_node_output_extension(_output_file: &str) -> Result<()> {
     Ok(())
+}
+
+fn document_to_json(doc: &Document<'static, String>) -> serde_json::Value {
+    let mut m = Map::new();
+    m.insert("kind".to_string(), json!("Document"));
+    m.insert(
+        "definitions".to_string(),
+        JsonValue::Array(doc.definitions.iter().map(definition_to_json).collect()),
+    );
+    JsonValue::Object(m)
+}
+
+fn definition_to_json(def: &Definition<'static, String>) -> serde_json::Value {
+    match def {
+        Definition::Fragment(f) => fragment_definition_to_json(f),
+        Definition::Operation(op) => operation_definition_to_json(op),
+    }
+}
+
+fn fragment_definition_to_json(f: &FragmentDefinition<'static, String>) -> serde_json::Value {
+    let TypeCondition::On(type_name) = &f.type_condition;
+    let mut m = Map::new();
+    m.insert("kind".to_string(), json!("FragmentDefinition"));
+    m.insert("name".to_string(), name_to_json(&f.name));
+    m.insert("typeCondition".to_string(), named_type_to_json(type_name));
+    m.insert(
+        "selectionSet".to_string(),
+        selection_set_to_json(&f.selection_set),
+    );
+    JsonValue::Object(m)
+}
+
+fn operation_definition_to_json(op: &OperationDefinition<'static, String>) -> serde_json::Value {
+    match op {
+        OperationDefinition::Query(q) => {
+            let mut m = Map::new();
+            m.insert("kind".to_string(), json!("OperationDefinition"));
+            m.insert("operation".to_string(), json!("query"));
+            if let Some(name) = &q.name {
+                m.insert("name".to_string(), name_to_json(name));
+            }
+            if !q.variable_definitions.is_empty() {
+                m.insert(
+                    "variableDefinitions".to_string(),
+                    JsonValue::Array(
+                        q.variable_definitions
+                            .iter()
+                            .map(variable_definition_to_json)
+                            .collect(),
+                    ),
+                );
+            }
+            m.insert(
+                "selectionSet".to_string(),
+                selection_set_to_json(&q.selection_set),
+            );
+            JsonValue::Object(m)
+        }
+        OperationDefinition::Mutation(mutation) => {
+            let mut m = Map::new();
+            m.insert("kind".to_string(), json!("OperationDefinition"));
+            m.insert("operation".to_string(), json!("mutation"));
+            if let Some(name) = &mutation.name {
+                m.insert("name".to_string(), name_to_json(name));
+            }
+            if !mutation.variable_definitions.is_empty() {
+                m.insert(
+                    "variableDefinitions".to_string(),
+                    JsonValue::Array(
+                        mutation
+                            .variable_definitions
+                            .iter()
+                            .map(variable_definition_to_json)
+                            .collect(),
+                    ),
+                );
+            }
+            m.insert(
+                "selectionSet".to_string(),
+                selection_set_to_json(&mutation.selection_set),
+            );
+            JsonValue::Object(m)
+        }
+        OperationDefinition::Subscription(sub) => {
+            let mut m = Map::new();
+            m.insert("kind".to_string(), json!("OperationDefinition"));
+            m.insert("operation".to_string(), json!("subscription"));
+            if let Some(name) = &sub.name {
+                m.insert("name".to_string(), name_to_json(name));
+            }
+            if !sub.variable_definitions.is_empty() {
+                m.insert(
+                    "variableDefinitions".to_string(),
+                    JsonValue::Array(
+                        sub.variable_definitions
+                            .iter()
+                            .map(variable_definition_to_json)
+                            .collect(),
+                    ),
+                );
+            }
+            m.insert(
+                "selectionSet".to_string(),
+                selection_set_to_json(&sub.selection_set),
+            );
+            JsonValue::Object(m)
+        }
+        OperationDefinition::SelectionSet(_) => json!(null),
+    }
+}
+
+fn variable_definition_to_json(v: &VariableDefinition<'static, String>) -> serde_json::Value {
+    let mut m = Map::new();
+    m.insert("kind".to_string(), json!("VariableDefinition"));
+    m.insert(
+        "variable".to_string(),
+        json!({ "kind": "Variable", "name": { "kind": "Name", "value": v.name } }),
+    );
+    m.insert("type".to_string(), type_to_json(&v.var_type));
+    JsonValue::Object(m)
+}
+
+fn type_to_json(t: &Type<'static, String>) -> serde_json::Value {
+    match t {
+        Type::NamedType(n) => named_type_to_json(n),
+        Type::ListType(inner) => {
+            let mut m = Map::new();
+            m.insert("kind".to_string(), json!("ListType"));
+            m.insert("type".to_string(), type_to_json(inner));
+            JsonValue::Object(m)
+        }
+        Type::NonNullType(inner) => {
+            let mut m = Map::new();
+            m.insert("kind".to_string(), json!("NonNullType"));
+            m.insert("type".to_string(), type_to_json(inner));
+            JsonValue::Object(m)
+        }
+    }
+}
+
+fn selection_set_to_json(ss: &SelectionSet<'static, String>) -> serde_json::Value {
+    let mut m = Map::new();
+    m.insert("kind".to_string(), json!("SelectionSet"));
+    m.insert(
+        "selections".to_string(),
+        JsonValue::Array(ss.items.iter().map(selection_to_json).collect()),
+    );
+    JsonValue::Object(m)
+}
+
+fn selection_to_json(sel: &Selection<'static, String>) -> serde_json::Value {
+    match sel {
+        Selection::Field(f) => field_to_json(f),
+        Selection::FragmentSpread(spread) => {
+            let mut m = Map::new();
+            m.insert("kind".to_string(), json!("FragmentSpread"));
+            m.insert("name".to_string(), name_to_json(&spread.fragment_name));
+            JsonValue::Object(m)
+        }
+        Selection::InlineFragment(inline) => inline_fragment_to_json(inline),
+    }
+}
+
+fn field_to_json(f: &Field<'static, String>) -> serde_json::Value {
+    let mut m = Map::new();
+    m.insert("kind".to_string(), json!("Field"));
+    if let Some(alias) = &f.alias {
+        m.insert("alias".to_string(), name_to_json(alias));
+    }
+    m.insert("name".to_string(), name_to_json(&f.name));
+    if !f.arguments.is_empty() {
+        let args = f
+            .arguments
+            .iter()
+            .map(|(k, v)| {
+                let mut a = Map::new();
+                a.insert("kind".to_string(), json!("Argument"));
+                a.insert("name".to_string(), name_to_json(k));
+                a.insert("value".to_string(), value_to_json(v));
+                JsonValue::Object(a)
+            })
+            .collect::<Vec<_>>();
+        m.insert("arguments".to_string(), JsonValue::Array(args));
+    }
+    if !f.selection_set.items.is_empty() {
+        m.insert(
+            "selectionSet".to_string(),
+            selection_set_to_json(&f.selection_set),
+        );
+    }
+    JsonValue::Object(m)
+}
+
+fn inline_fragment_to_json(inline: &InlineFragment<'static, String>) -> serde_json::Value {
+    let mut m = Map::new();
+    m.insert("kind".to_string(), json!("InlineFragment"));
+    if let Some(TypeCondition::On(t)) = &inline.type_condition {
+        m.insert("typeCondition".to_string(), named_type_to_json(t));
+    }
+    m.insert(
+        "selectionSet".to_string(),
+        selection_set_to_json(&inline.selection_set),
+    );
+    JsonValue::Object(m)
+}
+
+fn value_to_json(v: &Value<'static, String>) -> serde_json::Value {
+    match v {
+        Value::Variable(name) => {
+            let mut m = Map::new();
+            m.insert("kind".to_string(), json!("Variable"));
+            m.insert("name".to_string(), name_to_json(name));
+            JsonValue::Object(m)
+        }
+        Value::Int(i) => {
+            json!({ "kind": "IntValue", "value": format!("{}", i.as_i64().unwrap_or(0)) })
+        }
+        Value::Float(f) => json!({ "kind": "FloatValue", "value": format!("{}", f) }),
+        Value::String(s) => json!({ "kind": "StringValue", "value": s }),
+        Value::Boolean(b) => json!({ "kind": "BooleanValue", "value": b }),
+        Value::Null => json!({ "kind": "NullValue" }),
+        Value::Enum(e) => json!({ "kind": "EnumValue", "value": e }),
+        Value::List(items) => {
+            let mut m = Map::new();
+            m.insert("kind".to_string(), json!("ListValue"));
+            m.insert(
+                "values".to_string(),
+                JsonValue::Array(items.iter().map(value_to_json).collect()),
+            );
+            JsonValue::Object(m)
+        }
+        Value::Object(obj) => {
+            let mut m = Map::new();
+            m.insert("kind".to_string(), json!("ObjectValue"));
+            let fields = obj
+                .iter()
+                .map(|(k, vv)| {
+                    let mut f = Map::new();
+                    f.insert("kind".to_string(), json!("ObjectField"));
+                    f.insert("name".to_string(), name_to_json(k));
+                    f.insert("value".to_string(), value_to_json(vv));
+                    JsonValue::Object(f)
+                })
+                .collect::<Vec<_>>();
+            m.insert("fields".to_string(), JsonValue::Array(fields));
+            JsonValue::Object(m)
+        }
+    }
+}
+
+fn name_to_json(value: &str) -> JsonValue {
+    let mut m = Map::new();
+    m.insert("kind".to_string(), json!("Name"));
+    m.insert("value".to_string(), json!(value));
+    JsonValue::Object(m)
+}
+
+fn named_type_to_json(type_name: &str) -> JsonValue {
+    let mut m = Map::new();
+    m.insert("kind".to_string(), json!("NamedType"));
+    m.insert("name".to_string(), name_to_json(type_name));
+    JsonValue::Object(m)
 }

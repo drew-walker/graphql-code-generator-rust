@@ -2,6 +2,7 @@ mod config;
 mod index;
 mod ts_operation_variables_to_object;
 mod ts_selection_set_processor;
+mod ts_selection_set_to_object;
 mod visitor;
 
 pub use config::TypeScriptDocumentsPluginConfig;

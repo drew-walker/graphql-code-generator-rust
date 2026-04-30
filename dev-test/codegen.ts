@@ -125,11 +125,11 @@ const config: CodegenConfig = {
   //     config: { immutableTypes: true },
   //     plugins: ['typescript', 'typescript-operations'],
   //   },
-  //   './dev-test/star-wars/types.ts': {
-  //     schema: './dev-test/star-wars/schema.json',
-  //     documents: './dev-test/star-wars/**/*.graphql',
-  //     plugins: ['typescript', 'typescript-operations'],
-  //   },
+    './dev-test/star-wars/types.ts': {
+      schema: './dev-test/star-wars/schema.json',
+      documents: './dev-test/star-wars/**/*.graphql',
+      plugins: ['typescript', 'typescript-operations'],
+    },
   //   './dev-test/star-wars/types.excludeQueryAlpha.ts': {
   //     schema: './dev-test/star-wars/schema.json',
   //     documents: [

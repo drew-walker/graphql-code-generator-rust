@@ -1,11 +1,12 @@
 //! Port of `packages/plugins/typescript/typed-document-node/src/visitor.ts` (thin wrapper).
 
 use anyhow::Result;
-use graphql_parser::query::{Definition, OperationDefinition};
+use graphql_parser::Pos;
+use graphql_parser::query::{Definition, OperationDefinition, Selection, SelectionSet};
 use plugin_helpers::types::ComplexPluginOutput;
 use visitor_plugin_common::client_side_base_visitor::{
-    build_document_with_dependent_fragments, collect_fragments, merge_documents, order_fragments,
-    print_document,
+    build_document_with_dependent_fragments, collect_fragments, merge_documents,
+    order_fragments_with_roots, print_document_json,
 };
 
 use crate::config::TypeScriptTypedDocumentNodesConfig;
@@ -24,9 +25,11 @@ impl<'a> TypeScriptDocumentNodesVisitor<'a> {
     }
 
     pub fn generate(&self) -> Result<ComplexPluginOutput> {
-        let _ = self.config;
-
         let mut out = String::new();
+
+        if let Some(path) = &self.config.import_operation_types_from {
+            out.push_str(&format!("import * as Types from '{path}';\n"));
+        }
 
         // Upstream uses `documentNodeImport: '@graphql-typed-document-node/core#TypedDocumentNode'`
         // and aliases it to `DocumentNode`.
@@ -38,7 +41,16 @@ impl<'a> TypeScriptDocumentNodesVisitor<'a> {
 
         // Upstream visitor emits fragments first, in dependency order.
         let fragments = collect_fragments(&merged);
-        for name in order_fragments(&fragments) {
+        let fragment_roots: Vec<String> = merged
+            .definitions
+            .iter()
+            .filter_map(|d| match d {
+                Definition::Fragment(f) => Some(f.name.clone()),
+                _ => None,
+            })
+            .collect();
+
+        for name in order_fragments_with_roots(&fragment_roots, &fragments) {
             if let Some(f) = fragments.get(&name) {
                 out.push_str(&self.emit_fragment_doc(f, &fragments));
                 out.push('\n');
@@ -46,11 +58,11 @@ impl<'a> TypeScriptDocumentNodesVisitor<'a> {
         }
         // Then operations.
         for def in &merged.definitions {
-            if let Definition::Operation(op) = def {
-                if let Some(s) = self.emit_operation_doc(op, &fragments) {
-                    out.push_str(&s);
-                    out.push('\n');
-                }
+            if let Definition::Operation(op) = def
+                && let Some(s) = self.emit_operation_doc(op, &fragments)
+            {
+                out.push_str(&s);
+                out.push('\n');
             }
         }
 
@@ -71,11 +83,19 @@ impl<'a> TypeScriptDocumentNodesVisitor<'a> {
     ) -> String {
         let const_name = format!("{}FragmentDoc", f.name);
         let type_name = format!("{}Fragment", f.name);
-        let doc =
+        let mut doc =
             build_document_with_dependent_fragments(Definition::Fragment(f.clone()), fragments);
-        let js = print_document(&doc);
+        if self.config.add_typename_to_selection_sets {
+            add_typename_to_document(&mut doc);
+        }
+        let js = print_document_json(&doc);
+        let type_prefix = if self.config.import_operation_types_from.is_some() {
+            "Types."
+        } else {
+            ""
+        };
         format!(
-            "export const {const_name} = {js} as unknown as DocumentNode<{type_name}, unknown>;"
+            "export const {const_name} = {js} as unknown as DocumentNode<{type_prefix}{type_name}, unknown>;"
         )
     }
 
@@ -97,11 +117,19 @@ impl<'a> TypeScriptDocumentNodesVisitor<'a> {
         let const_name = format!("{}Document", to_pascal_case(name));
         let result_type = format!("{}{}", to_pascal_case(name), op_kind);
         let vars_type = format!("{result_type}Variables");
-        let doc =
+        let mut doc =
             build_document_with_dependent_fragments(Definition::Operation(op.clone()), fragments);
-        let js = print_document(&doc);
+        if self.config.add_typename_to_selection_sets {
+            add_typename_to_document(&mut doc);
+        }
+        let js = print_document_json(&doc);
+        let type_prefix = if self.config.import_operation_types_from.is_some() {
+            "Types."
+        } else {
+            ""
+        };
         Some(format!(
-            "export const {const_name} = {js} as unknown as DocumentNode<{result_type}, {vars_type}>;"
+            "export const {const_name} = {js} as unknown as DocumentNode<{type_prefix}{result_type}, {type_prefix}{vars_type}>;"
         ))
     }
 
@@ -124,4 +152,62 @@ fn to_pascal_case(name: &str) -> String {
         }
     }
     out
+}
+
+fn add_typename_to_document(doc: &mut graphql_parser::query::Document<'static, String>) {
+    for def in &mut doc.definitions {
+        match def {
+            Definition::Fragment(f) => {
+                add_typename_to_selection_set(&mut f.selection_set, false);
+            }
+            Definition::Operation(op) => match op {
+                OperationDefinition::Query(q) => {
+                    add_typename_to_selection_set(&mut q.selection_set, true);
+                }
+                OperationDefinition::Mutation(m) => {
+                    add_typename_to_selection_set(&mut m.selection_set, true);
+                }
+                OperationDefinition::Subscription(s) => {
+                    add_typename_to_selection_set(&mut s.selection_set, true);
+                }
+                OperationDefinition::SelectionSet(ss) => {
+                    add_typename_to_selection_set(ss, true);
+                }
+            },
+        }
+    }
+}
+
+fn add_typename_to_selection_set(ss: &mut SelectionSet<'static, String>, is_operation_root: bool) {
+    if !is_operation_root && !selection_set_has_typename(ss) {
+        ss.items
+            .push(Selection::Field(graphql_parser::query::Field {
+                position: Pos { line: 0, column: 0 },
+                alias: None,
+                name: "__typename".to_string(),
+                arguments: vec![],
+                directives: vec![],
+                selection_set: SelectionSet {
+                    span: ss.span,
+                    items: vec![],
+                },
+            }));
+    }
+
+    for sel in &mut ss.items {
+        match sel {
+            Selection::Field(f) => add_typename_to_selection_set(&mut f.selection_set, false),
+            Selection::InlineFragment(inline) => {
+                add_typename_to_selection_set(&mut inline.selection_set, false)
+            }
+            Selection::FragmentSpread(_) => {}
+        }
+    }
+}
+
+fn selection_set_has_typename(ss: &SelectionSet<'static, String>) -> bool {
+    ss.items.iter().any(|sel| match sel {
+        Selection::Field(f) => f.name == "__typename" || f.name.starts_with("__"),
+        _ => false,
+    })
 }

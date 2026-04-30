@@ -6,11 +6,12 @@ use crate::visitor::{TypeRef, parse_ast_type_ref};
 
 pub struct TypeScriptOperationVariablesToObject<'a> {
     pub is_enum: &'a dyn Fn(&str) -> bool,
+    pub is_scalar: &'a dyn Fn(&str) -> bool,
 }
 
 impl<'a> TypeScriptOperationVariablesToObject<'a> {
-    pub fn new(is_enum: &'a dyn Fn(&str) -> bool) -> Self {
-        Self { is_enum }
+    pub fn new(is_enum: &'a dyn Fn(&str) -> bool, is_scalar: &'a dyn Fn(&str) -> bool) -> Self {
+        Self { is_enum, is_scalar }
     }
 
     fn scalar_input_ts(name: &str) -> String {
@@ -25,8 +26,10 @@ impl<'a> TypeScriptOperationVariablesToObject<'a> {
                 "InputMaybe<{}>",
                 if (self.is_enum)(name) {
                     name.clone()
-                } else {
+                } else if (self.is_scalar)(name) {
                     Self::scalar_input_ts(name)
+                } else {
+                    name.clone()
                 }
             ),
         }
@@ -40,8 +43,10 @@ impl<'a> TypeScriptOperationVariablesToObject<'a> {
                 TypeRef::Named(name) => {
                     if (self.is_enum)(name) {
                         name.clone()
-                    } else {
+                    } else if (self.is_scalar)(name) {
                         Self::scalar_input_ts(name)
+                    } else {
+                        name.clone()
                     }
                 }
                 TypeRef::NonNull(_) => self.input_ts(inner),
@@ -51,8 +56,10 @@ impl<'a> TypeScriptOperationVariablesToObject<'a> {
                 "InputMaybe<{}>",
                 if (self.is_enum)(name) {
                     name.clone()
-                } else {
+                } else if (self.is_scalar)(name) {
                     Self::scalar_input_ts(name)
+                } else {
+                    name.clone()
                 }
             ),
         };

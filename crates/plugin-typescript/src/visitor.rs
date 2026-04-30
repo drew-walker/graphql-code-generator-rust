@@ -1,9 +1,11 @@
 //! Port of `packages/plugins/typescript/typescript/src/visitor.ts` (subset; grows with parity).
 
+use anyhow::Context as _;
 use plugin_helpers::schema_input::SchemaGenerationInput;
 use serde_json::Value;
 
 use crate::config::{TypeScriptPluginConfig, TypeScriptPluginParsedConfig};
+use visitor_plugin_common::utils::{WrapInput, transform_comment, wrap_with_single_quotes};
 
 // --- Same string constants as upstream `visitor.ts` (without `export`; prefix added in getters) ---
 
@@ -160,6 +162,354 @@ impl<'a> TsVisitor<'a> {
     }
 
     // Introspection-only type emission lives in `introspection_visitor`, mirroring upstream.
+
+    pub(crate) fn emit_enum_from_introspection(
+        &self,
+        out: &mut String,
+        t: &Value,
+    ) -> anyhow::Result<()> {
+        let name = t
+            .get("name")
+            .and_then(|n| n.as_str())
+            .context("enum without name")?;
+        let values = t
+            .get("enumValues")
+            .and_then(|v| v.as_array())
+            .context("enum without enumValues")?;
+
+        let overrides = &self.schema_input.enum_internal_values;
+
+        if let Some(description) = t.get("description").and_then(|d| d.as_str())
+            && !description.is_empty()
+        {
+            out.push_str(&transform_comment(description, 0, false));
+        }
+
+        out.push_str(&format!("export enum {name} {{\n"));
+
+        let mut enum_values: Vec<&Value> = values.iter().collect();
+        enum_values.sort_by_key(|ev| ev.get("name").and_then(|n| n.as_str()).unwrap_or(""));
+
+        for ev in enum_values {
+            if let Some(description) = ev.get("description").and_then(|d| d.as_str())
+                && !description.is_empty()
+            {
+                out.push_str(&transform_comment(description, 1, false));
+            }
+
+            let gql_name = ev
+                .get("name")
+                .and_then(|n| n.as_str())
+                .context("enum value without name")?;
+            let ts_key = graphql_enum_value_to_ts_key(gql_name);
+            let serialized = overrides
+                .get(name)
+                .and_then(|m| m.get(gql_name))
+                .map(|s| s.as_str())
+                .unwrap_or(gql_name);
+            let skip_numeric_check = overrides.get(name).and_then(|m| m.get(gql_name)).is_some();
+            let lit = wrap_with_single_quotes(WrapInput::Str(serialized), skip_numeric_check);
+            out.push_str(&format!("  {ts_key} = {lit},\n"));
+        }
+        out.push_str("}\n\n");
+        Ok(())
+    }
+
+    pub(crate) fn emit_object_type_from_introspection(
+        &self,
+        out: &mut String,
+        t: &Value,
+    ) -> anyhow::Result<()> {
+        let name = t
+            .get("name")
+            .and_then(|n| n.as_str())
+            .context("object without name")?;
+        let fields = t.get("fields").and_then(|f| f.as_array());
+
+        let type_description = t.get("description").and_then(|d| d.as_str());
+        if let Some(description) = type_description
+            && !description.is_empty()
+        {
+            out.push_str(&transform_comment(description, 0, false));
+        }
+
+        let implements = t
+            .get("interfaces")
+            .and_then(|i| i.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.get("name").and_then(|n| n.as_str()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        if implements.is_empty() {
+            out.push_str(&format!("export type {name} = {{\n"));
+        } else {
+            out.push_str(&format!("export type {name} = "));
+            for (idx, i) in implements.iter().enumerate() {
+                if idx > 0 {
+                    out.push_str(" & ");
+                }
+                out.push_str(i);
+            }
+            out.push_str(" & {\n");
+        }
+        out.push_str("  __typename?: '");
+        out.push_str(name);
+        out.push_str("';\n");
+
+        let mut arg_types: Vec<String> = Vec::new();
+        if let Some(fields) = fields {
+            let mut sorted_fields: Vec<&Value> = fields.iter().collect();
+            sorted_fields.sort_by_key(|f| f.get("name").and_then(|n| n.as_str()).unwrap_or(""));
+
+            for f in sorted_fields {
+                let fname = f
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .context("field without name")?;
+                let fdesc = f.get("description").and_then(|d| d.as_str());
+                let ftype = f.get("type").context("field without type")?;
+                let (optional, ts) = graphql_output_field_type_to_ts_field(ftype);
+                let q = if optional && !self.config.avoid_optionals {
+                    "?"
+                } else {
+                    ""
+                };
+
+                if let Some(desc) = fdesc
+                    && !desc.is_empty()
+                {
+                    out.push_str(&transform_comment(desc, 1, false));
+                }
+
+                out.push_str(&format!("  {fname}{q}: {ts};\n"));
+
+                let args = f.get("args").and_then(|a| a.as_array());
+                if let Some(args) = args
+                    && !args.is_empty()
+                {
+                    let mut args_block = String::new();
+                    if let Some(description) = type_description
+                        && !description.is_empty()
+                    {
+                        args_block.push_str(&transform_comment(description, 0, false));
+                    }
+                    args_block.push_str(&format!(
+                        "export type {name}{}Args = {{\n",
+                        to_pascal_case(fname)
+                    ));
+                    let mut sorted_args: Vec<&Value> = args.iter().collect();
+                    sorted_args
+                        .sort_by_key(|a| a.get("name").and_then(|n| n.as_str()).unwrap_or(""));
+                    for arg in sorted_args {
+                        let arg_name = arg
+                            .get("name")
+                            .and_then(|n| n.as_str())
+                            .context("arg without name")?;
+                        let arg_type = arg.get("type").context("arg without type")?;
+                        let (arg_optional, arg_ts) = graphql_input_field_type_to_ts_field(arg_type);
+                        let arg_q = if arg_optional && !self.config.avoid_optionals {
+                            "?"
+                        } else {
+                            ""
+                        };
+                        args_block.push_str(&format!("  {arg_name}{arg_q}: {arg_ts};\n"));
+                    }
+                    args_block.push_str("};\n\n");
+                    arg_types.push(args_block);
+                }
+            }
+        }
+
+        out.push_str("};\n\n");
+        if !arg_types.is_empty() {
+            for arg_type in &arg_types {
+                out.push_str(arg_type);
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn emit_interface_type_from_introspection(
+        &self,
+        out: &mut String,
+        t: &Value,
+    ) -> anyhow::Result<()> {
+        let name = t
+            .get("name")
+            .and_then(|n| n.as_str())
+            .context("interface without name")?;
+        let fields = t
+            .get("fields")
+            .and_then(|f| f.as_array())
+            .context("interface without fields")?;
+
+        let type_description = t.get("description").and_then(|d| d.as_str());
+        if let Some(description) = type_description
+            && !description.is_empty()
+        {
+            out.push_str(&transform_comment(description, 0, false));
+        }
+
+        out.push_str(&format!("export type {name} = {{\n"));
+
+        let mut arg_types: Vec<String> = Vec::new();
+        let mut sorted_fields: Vec<&Value> = fields.iter().collect();
+        sorted_fields.sort_by_key(|f| f.get("name").and_then(|n| n.as_str()).unwrap_or(""));
+
+        for f in sorted_fields {
+            let fname = f
+                .get("name")
+                .and_then(|n| n.as_str())
+                .context("field without name")?;
+            let fdesc = f.get("description").and_then(|d| d.as_str());
+            let ftype = f.get("type").context("field without type")?;
+            let (optional, ts) = graphql_output_field_type_to_ts_field(ftype);
+            let q = if optional && !self.config.avoid_optionals {
+                "?"
+            } else {
+                ""
+            };
+
+            if let Some(desc) = fdesc
+                && !desc.is_empty()
+            {
+                out.push_str(&transform_comment(desc, 1, false));
+            }
+
+            out.push_str(&format!("  {fname}{q}: {ts};\n"));
+
+            let args = f.get("args").and_then(|a| a.as_array());
+            if let Some(args) = args
+                && !args.is_empty()
+            {
+                let mut args_block = String::new();
+                if let Some(description) = type_description
+                    && !description.is_empty()
+                {
+                    args_block.push_str(&transform_comment(description, 0, false));
+                }
+                args_block.push_str(&format!(
+                    "export type {name}{}Args = {{\n",
+                    to_pascal_case(fname)
+                ));
+                let mut sorted_args: Vec<&Value> = args.iter().collect();
+                sorted_args.sort_by_key(|a| a.get("name").and_then(|n| n.as_str()).unwrap_or(""));
+                for arg in sorted_args {
+                    let arg_name = arg
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .context("arg without name")?;
+                    let arg_type = arg.get("type").context("arg without type")?;
+                    let (arg_optional, arg_ts) = graphql_input_field_type_to_ts_field(arg_type);
+                    let arg_q = if arg_optional && !self.config.avoid_optionals {
+                        "?"
+                    } else {
+                        ""
+                    };
+                    args_block.push_str(&format!("  {arg_name}{arg_q}: {arg_ts};\n"));
+                }
+                args_block.push_str("};\n\n");
+                arg_types.push(args_block);
+            }
+        }
+
+        out.push_str("};\n\n");
+        for arg_type in &arg_types {
+            out.push_str(arg_type);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn emit_input_object_type_from_introspection(
+        &self,
+        out: &mut String,
+        t: &Value,
+    ) -> anyhow::Result<()> {
+        let name = t
+            .get("name")
+            .and_then(|n| n.as_str())
+            .context("input object without name")?;
+        let fields = t
+            .get("inputFields")
+            .and_then(|f| f.as_array())
+            .context("input object without inputFields")?;
+
+        let type_description = t.get("description").and_then(|d| d.as_str());
+        if let Some(description) = type_description
+            && !description.is_empty()
+        {
+            out.push_str(&transform_comment(description, 0, false));
+        }
+
+        out.push_str(&format!("export type {name} = {{\n"));
+        let mut sorted_fields: Vec<&Value> = fields.iter().collect();
+        sorted_fields.sort_by_key(|f| f.get("name").and_then(|n| n.as_str()).unwrap_or(""));
+        for f in sorted_fields {
+            let fname = f
+                .get("name")
+                .and_then(|n| n.as_str())
+                .context("input field without name")?;
+            let fdesc = f.get("description").and_then(|d| d.as_str());
+            let ftype = f.get("type").context("input field without type")?;
+            let (optional, ts) = graphql_input_field_type_to_ts_field(ftype);
+            let q = if optional && !self.config.avoid_optionals {
+                "?"
+            } else {
+                ""
+            };
+
+            if let Some(desc) = fdesc
+                && !desc.is_empty()
+            {
+                out.push_str(&transform_comment(desc, 1, false));
+            }
+
+            out.push_str(&format!("  {fname}{q}: {ts};\n"));
+        }
+        out.push_str("};\n\n");
+        Ok(())
+    }
+
+    pub(crate) fn emit_union_type_from_introspection(
+        &self,
+        out: &mut String,
+        t: &Value,
+    ) -> anyhow::Result<()> {
+        let name = t
+            .get("name")
+            .and_then(|n| n.as_str())
+            .context("union without name")?;
+        let possible = t
+            .get("possibleTypes")
+            .and_then(|p| p.as_array())
+            .context("union without possibleTypes")?;
+
+        let type_description = t.get("description").and_then(|d| d.as_str());
+        if let Some(description) = type_description
+            && !description.is_empty()
+        {
+            out.push_str(&transform_comment(description, 0, false));
+        }
+
+        let mut members: Vec<&str> = possible
+            .iter()
+            .filter_map(|v| v.get("name").and_then(|n| n.as_str()))
+            .collect();
+        members.sort();
+
+        out.push_str(&format!("export type {name} = "));
+        for (idx, m) in members.iter().enumerate() {
+            if idx > 0 {
+                out.push_str(" | ");
+            }
+            out.push_str(m);
+        }
+        out.push_str(";\n\n");
+        Ok(())
+    }
 }
 
 pub(crate) fn graphql_enum_value_to_ts_key(name: &str) -> String {
