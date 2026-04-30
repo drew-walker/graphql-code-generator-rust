@@ -104,6 +104,23 @@ pub async fn execute_codegen(context: &mut CodegenContext) -> ExecuteCodegenOutp
                         }
                     }
                 }
+                "typed-document-node" => {
+                    let tdn_config: plugin_typed_document_node::TypeScriptTypedDocumentNodesConfig =
+                        serde_json::from_value(serde_json::Value::Object(
+                            output_config.config.clone(),
+                        ))
+                        .unwrap_or_default();
+                    match plugin_typed_document_node::plugin(&schema_input, &documents, &tdn_config)
+                    {
+                        Ok(out) => merge_complex_plugin_output(&mut merged, out),
+                        Err(e) => {
+                            return ExecuteCodegenOutput {
+                                result,
+                                error: Some(e),
+                            };
+                        }
+                    }
+                }
                 other => {
                     return ExecuteCodegenOutput {
                         result,

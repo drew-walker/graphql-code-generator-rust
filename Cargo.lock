@@ -429,6 +429,7 @@ dependencies = [
  "inquire",
  "pathdiff",
  "plugin-helpers",
+ "plugin-typed-document-node",
  "plugin-typescript",
  "plugin-typescript-operations",
  "serde",
@@ -666,6 +667,18 @@ dependencies = [
  "graphql-parser",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "plugin-typed-document-node"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "graphql-parser",
+ "plugin-helpers",
+ "serde",
+ "serde_json",
+ "visitor-plugin-common",
 ]
 
 [[package]]
@@ -1101,6 +1114,11 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 [[package]]
 name = "visitor-plugin-common"
 version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "graphql-parser",
+ "plugin-helpers",
+]
 
 [[package]]
 name = "walkdir"

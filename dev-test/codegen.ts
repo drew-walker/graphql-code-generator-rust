@@ -67,11 +67,11 @@ const config: CodegenConfig = {
   //     ],
   //     plugins: ['typescript-graphql-files-modules'],
   //   },
-  //   './dev-test/githunt/typed-document-nodes.ts': {
-  //     schema: './dev-test/githunt/schema.json',
-  //     documents: './dev-test/githunt/**/*.graphql',
-  //     plugins: ['typescript', 'typescript-operations', 'typed-document-node'],
-  //   },
+    './dev-test/githunt/typed-document-nodes.ts': {
+      schema: './dev-test/githunt/schema.json',
+      documents: './dev-test/githunt/**/*.graphql',
+      plugins: ['typescript', 'typescript-operations', 'typed-document-node'],
+    },
     './dev-test/githunt/types.ts': {
       schema: './dev-test/githunt/schema.json',
       documents: './dev-test/githunt/**/*.graphql',
