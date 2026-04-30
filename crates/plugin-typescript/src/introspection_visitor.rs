@@ -37,37 +37,28 @@ impl<'a> TsIntrospectionVisitor<'a> {
             .context("introspection.__schema.types missing")?;
 
         let mut out = String::new();
-
-        let mut enums: Vec<&Value> = types
+        let mut relevant: Vec<&Value> = types
             .iter()
-            .filter(|t| t.get("kind").and_then(|k| k.as_str()) == Some("ENUM"))
             .filter(|t| {
                 t.get("name")
                     .and_then(|n| n.as_str())
                     .map(|n| !n.starts_with("__"))
                     .unwrap_or(false)
             })
+            .filter(|t| {
+                matches!(
+                    t.get("kind").and_then(|k| k.as_str()),
+                    Some("ENUM") | Some("OBJECT")
+                )
+            })
             .collect();
-        enums.sort_by_key(|t| t.get("name").and_then(|n| n.as_str()).unwrap_or(""));
+        relevant.sort_by_key(|t| t.get("name").and_then(|n| n.as_str()).unwrap_or(""));
 
-        for t in &enums {
-            self.emit_enum(&mut out, t)?;
-        }
-
-        if !self.ts_visitor.config.only_enums {
-            let mut objects: Vec<&Value> = types
-                .iter()
-                .filter(|t| t.get("kind").and_then(|k| k.as_str()) == Some("OBJECT"))
-                .filter(|t| {
-                    t.get("name")
-                        .and_then(|n| n.as_str())
-                        .map(|n| !n.starts_with("__"))
-                        .unwrap_or(false)
-                })
-                .collect();
-            objects.sort_by_key(|t| t.get("name").and_then(|n| n.as_str()).unwrap_or(""));
-
-            for t in &objects {
+        for t in relevant {
+            let kind = t.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+            if kind == "ENUM" {
+                self.emit_enum(&mut out, t)?;
+            } else if kind == "OBJECT" && !self.ts_visitor.config.only_enums {
                 self.emit_object_type(&mut out, t)?;
             }
         }
@@ -134,6 +125,13 @@ impl<'a> TsIntrospectionVisitor<'a> {
             .context("object without name")?;
         let fields = t.get("fields").and_then(|f| f.as_array());
 
+        let type_description = t.get("description").and_then(|d| d.as_str());
+        if let Some(description) = type_description
+            && !description.is_empty()
+        {
+            out.push_str(&transform_comment(description, 0, false));
+        }
+
         out.push_str(&format!("export type {name} = {{\n"));
         out.push_str("  __typename?: '");
         out.push_str(name);
@@ -170,9 +168,20 @@ impl<'a> TsIntrospectionVisitor<'a> {
                 if let Some(args) = args
                     && !args.is_empty()
                 {
-                    let mut args_block =
-                        format!("export type {name}{}Args = {{\n", to_pascal_case(fname));
-                    for arg in args {
+                    let mut args_block = String::new();
+                    if let Some(description) = type_description
+                        && !description.is_empty()
+                    {
+                        args_block.push_str(&transform_comment(description, 0, false));
+                    }
+                    args_block.push_str(&format!(
+                        "export type {name}{}Args = {{\n",
+                        to_pascal_case(fname)
+                    ));
+                    let mut sorted_args: Vec<&Value> = args.iter().collect();
+                    sorted_args
+                        .sort_by_key(|a| a.get("name").and_then(|n| n.as_str()).unwrap_or(""));
+                    for arg in sorted_args {
                         let arg_name = arg
                             .get("name")
                             .and_then(|n| n.as_str())
@@ -186,7 +195,7 @@ impl<'a> TsIntrospectionVisitor<'a> {
                         };
                         args_block.push_str(&format!("  {arg_name}{arg_q}: {arg_ts};\n"));
                     }
-                    args_block.push_str("};\n");
+                    args_block.push_str("};\n\n");
                     arg_types.push(args_block);
                 }
             }
@@ -197,7 +206,6 @@ impl<'a> TsIntrospectionVisitor<'a> {
             for arg_type in &arg_types {
                 out.push_str(arg_type);
             }
-            out.push('\n');
         }
         Ok(())
     }

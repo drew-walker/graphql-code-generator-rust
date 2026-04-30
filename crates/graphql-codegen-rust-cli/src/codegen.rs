@@ -1,5 +1,7 @@
 use crate::config::CodegenContext;
+use crate::load::load_documents;
 use plugin_helpers::types::{Config, FileOutput, OutputConfig};
+use plugin_helpers::utils::{merge_complex_plugin_output, merge_outputs};
 
 #[derive(Debug)]
 pub struct ExecuteCodegenOutput {
@@ -21,6 +23,8 @@ pub async fn execute_codegen(context: &mut CodegenContext) -> ExecuteCodegenOutp
         }
     };
 
+    let ignore_documents: Vec<String> = config.generates.keys().cloned().collect();
+
     for (filename, output_config) in generates {
         // TS executeCodegen per-output pipeline: load schema → load documents → generate.
         let mut schema_pointers: Vec<String> = Vec::new();
@@ -37,10 +41,32 @@ pub async fn execute_codegen(context: &mut CodegenContext) -> ExecuteCodegenOutp
             }
         };
 
-        // TODO: load documents (root + output), presets, plugin map, documentTransforms — TS parity.
-        let _ = (&config.documents, &output_config.documents);
+        let mut document_pointers: Vec<String> = Vec::new();
+        document_pointers.extend(config.documents.clone());
+        document_pointers.extend(output_config.documents.clone());
 
-        let mut content = String::new();
+        let mut external_document_pointers: Vec<String> = Vec::new();
+        external_document_pointers.extend(config.external_documents.clone());
+        external_document_pointers.extend(output_config.external_documents.clone());
+
+        let documents = match load_documents(
+            &context.cwd,
+            &document_pointers,
+            &external_document_pointers,
+            &ignore_documents,
+        )
+        .await
+        {
+            Ok(d) => d,
+            Err(e) => {
+                return ExecuteCodegenOutput {
+                    result,
+                    error: Some(e),
+                };
+            }
+        };
+
+        let mut merged = plugin_helpers::types::ComplexPluginOutput::default();
         for plugin_name in &output_config.plugins {
             match plugin_name.as_str() {
                 "typescript" => {
@@ -48,8 +74,28 @@ pub async fn execute_codegen(context: &mut CodegenContext) -> ExecuteCodegenOutp
                         plugin_typescript::TypeScriptPluginConfig::from_output_config_map(
                             &output_config.config,
                         );
-                    match plugin_typescript::plugin(&schema_input, &[], &ts_config) {
-                        Ok(out) => content = plugin_typescript::merge_plugin_output(&out),
+                    match plugin_typescript::plugin(&schema_input, &documents, &ts_config) {
+                        Ok(out) => merge_complex_plugin_output(&mut merged, out),
+                        Err(e) => {
+                            return ExecuteCodegenOutput {
+                                result,
+                                error: Some(e),
+                            };
+                        }
+                    }
+                }
+                "typescript-operations" => {
+                    let ops_config: plugin_typescript_operations::TypeScriptDocumentsPluginConfig =
+                        serde_json::from_value(serde_json::Value::Object(
+                            output_config.config.clone(),
+                        ))
+                        .unwrap_or_default();
+                    match plugin_typescript_operations::plugin(
+                        &schema_input,
+                        &documents,
+                        &ops_config,
+                    ) {
+                        Ok(out) => merge_complex_plugin_output(&mut merged, out),
                         Err(e) => {
                             return ExecuteCodegenOutput {
                                 result,
@@ -69,6 +115,7 @@ pub async fn execute_codegen(context: &mut CodegenContext) -> ExecuteCodegenOutp
             }
         }
 
+        let content = merge_outputs(&merged);
         result.push(FileOutput {
             filename: filename.to_string(),
             content: Some(content),

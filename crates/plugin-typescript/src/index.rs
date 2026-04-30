@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use plugin_helpers::schema_input::SchemaGenerationInput;
-use plugin_helpers::types::ComplexPluginOutput;
+use plugin_helpers::types::{ComplexPluginOutput, DocumentFile};
 
 use crate::config::TypeScriptPluginConfig;
 use crate::introspection_visitor::TsIntrospectionVisitor;
@@ -22,7 +22,7 @@ pub fn merge_plugin_output(output: &ComplexPluginOutput) -> String {
 /// `documents` matches the TS arity; pass `&[]` until document loading is ported.
 pub fn plugin(
     schema: &SchemaGenerationInput,
-    _documents: &[()],
+    _documents: &[DocumentFile],
     config: &TypeScriptPluginConfig,
 ) -> Result<ComplexPluginOutput> {
     let visitor = TsVisitor::new(schema, config);

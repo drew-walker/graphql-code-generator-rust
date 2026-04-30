@@ -118,13 +118,61 @@ pub struct LoadCodegenConfigResult {
 
 /// Mirrors TS `createContext`.
 pub async fn create_context(flags: CliFlags) -> Result<CodegenContext> {
-    // TS: handle cliFlags.require — stubbed, no dynamic module loading needed in Rust.
+    // TS: handle cliFlags.require.
+    //
+    // Upstream loads dotenv via `--require dotenv/config` (see repo root package.json scripts).
+    // In Rust we don't execute Node requires, but we can mirror the behavior for this specific
+    // module name by loading `.env` before evaluating config files.
+    maybe_load_dotenv_from_require(&flags);
 
     let custom_config_path = get_custom_config_path(&flags);
     let mut context = load_context(custom_config_path).await?;
     context.flags = flags;
     update_context_with_cli_flags(&mut context);
     Ok(context)
+}
+
+fn maybe_load_dotenv_from_require(flags: &CliFlags) {
+    let wants_dotenv = flags
+        .require
+        .iter()
+        .any(|m| m == "dotenv/config" || m == "dotenv/config.js");
+    if !wants_dotenv {
+        return;
+    }
+
+    // Upstream's `dotenv/config` supports both `DOTENV_CONFIG_PATH` and `dotenv_config_path`.
+    // If neither is provided, it defaults to `.env` in the current working directory.
+    let raw_path = std::env::var("DOTENV_CONFIG_PATH")
+        .ok()
+        .or_else(|| std::env::var("dotenv_config_path").ok());
+
+    if let Some(p) = raw_path
+        && !p.is_empty()
+    {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let candidate = PathBuf::from(&p);
+
+        // 1) Try as-is (dotenv/config behavior: path resolved relative to cwd).
+        let mut tried: Vec<PathBuf> = vec![candidate.clone()];
+
+        // 2) If it doesn't exist, also try relative to the config file's directory (common in scripts).
+        // This is a robustness improvement when running from subdirectories.
+        let config_path = cwd.join(&flags.config);
+        if let Some(parent) = config_path.parent() {
+            tried.push(parent.join(&candidate));
+        }
+
+        for t in tried {
+            if std::fs::metadata(&t).is_ok() {
+                let _ = dotenvy::from_path(&t);
+                break;
+            }
+        }
+        return;
+    }
+
+    let _ = dotenvy::dotenv();
 }
 
 /// Mirrors TS `loadContext`.

@@ -4,7 +4,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
+use globwalk::GlobWalkerBuilder;
 use plugin_helpers::schema_input::SchemaGenerationInput;
+use plugin_helpers::types::DocumentFile;
 use serde_json::Value;
 
 /// Loads a GraphQL schema from string pointers (paths relative to `cwd`), matching the
@@ -36,6 +38,117 @@ pub async fn load_schema(cwd: &Path, pointers: &[String]) -> Result<SchemaGenera
             path.display()
         ),
     }
+}
+
+fn is_graphql_document(path: &Path) -> bool {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    ext == "graphql" || ext == "gql"
+}
+
+async fn load_documents_for_pointers(
+    cwd: &Path,
+    pointers: &[String],
+    ignore: &[String],
+    doc_type: &str,
+) -> Result<Vec<DocumentFile>> {
+    if pointers.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let mut include: Vec<String> = Vec::new();
+    let mut exclude: Vec<String> = ignore.to_vec();
+
+    for p in pointers {
+        if let Some(rest) = p.strip_prefix('!') {
+            exclude.push(rest.to_string());
+        } else {
+            include.push(p.clone());
+        }
+    }
+
+    let mut files: Vec<PathBuf> = Vec::new();
+    for pat in include {
+        let pat = pat.strip_prefix("./").unwrap_or(&pat).to_string();
+
+        let walker = GlobWalkerBuilder::from_patterns(cwd, &[pat.as_str()])
+            .follow_links(true)
+            .file_type(globwalk::FileType::FILE)
+            .build()
+            .with_context(|| format!("failed to build glob walker for document pointer `{pat}`"))?;
+
+        for entry in walker.into_iter().flatten() {
+            let path = entry.path().to_path_buf();
+            if !is_graphql_document(&path) {
+                continue;
+            }
+            files.push(path);
+        }
+    }
+
+    // Apply excludes (best-effort). Upstream derives an `ignore` list from generates outputs.
+    if !exclude.is_empty() {
+        let mut excluded: Vec<PathBuf> = Vec::new();
+        for ex in exclude {
+            let ex = ex.strip_prefix("./").unwrap_or(&ex).to_string();
+            let walker = GlobWalkerBuilder::from_patterns(cwd, &[ex.as_str()])
+                .follow_links(true)
+                .file_type(globwalk::FileType::FILE)
+                .build()
+                .with_context(|| {
+                    format!("failed to build glob walker for ignore pointer `{ex}`")
+                })?;
+            for entry in walker.into_iter().flatten() {
+                excluded.push(entry.path().to_path_buf());
+            }
+        }
+        excluded.sort();
+        excluded.dedup();
+        files.retain(|p| !excluded.contains(p));
+    }
+
+    files.sort();
+    files.dedup();
+
+    let mut out: Vec<DocumentFile> = Vec::with_capacity(files.len());
+    for path in files {
+        let text = tokio::fs::read_to_string(&path)
+            .await
+            .with_context(|| format!("failed to read document {}", path.display()))?;
+
+        // graphql-parser's AST lifetime is tied to the input buffer, so we promote the buffer to
+        // `'static` for storage in `DocumentFile` (mirrors upstream's owned `DocumentNode` behavior).
+        let text: &'static str = Box::leak(text.into_boxed_str());
+
+        let document = graphql_parser::parse_query::<String>(text)
+            .with_context(|| format!("failed to parse GraphQL document {}", path.display()))?;
+
+        out.push(DocumentFile {
+            location: path.to_string_lossy().to_string(),
+            document,
+            r#type: Some(doc_type.to_string()),
+        });
+    }
+
+    Ok(out)
+}
+
+/// Loads GraphQL documents from pointers (paths or globs), mirroring the TS `loadDocuments` call site.
+///
+/// `ignore` is used to avoid loading generated outputs as inputs (upstream derives this from `generates`).
+pub async fn load_documents(
+    cwd: &Path,
+    pointers: &[String],
+    external_pointers: &[String],
+    ignore: &[String],
+) -> Result<Vec<DocumentFile>> {
+    let mut out = Vec::new();
+    out.extend(load_documents_for_pointers(cwd, pointers, ignore, "standard").await?);
+    out.extend(load_documents_for_pointers(cwd, external_pointers, ignore, "external").await?);
+    Ok(out)
 }
 
 fn resolve_path(cwd: &Path, p: &str) -> PathBuf {

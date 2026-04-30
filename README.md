@@ -14,9 +14,9 @@ Port and reimplement GraphQL Code Generator in Rust to achieve:
 
 ### Phase 1: Core Infrastructure
 
-- [ ] Schema parser (GraphQL SDL) — native path (`.graphql`) not wired yet
+- [ ] Schema parser (GraphQL SDL) — still shells out to Node for `.graphql` (native not wired yet)
 - [ ] AST node types
-- [ ] Document parser
+- [x] Document parser (`.graphql` operations/fragments) — wired via `graphql-parser`
 
 #### CLI
 - [x] "init" sub-command
@@ -58,7 +58,7 @@ All paths below are under [`graphql-code-generator` → `packages/`](https://git
 - [ ] **`plugins/typescript/typescript`** → `crates/plugin-typescript` — started (upstream-aligned module layout + plugin output shape; partial visitor parity)
 - [ ] **`plugins/typescript/typed-document-node`**
 - [ ] **`plugins/typescript/resolvers`**
-- [ ] **`plugins/typescript/operations`**
+- [ ] **`plugins/typescript/operations`** → `crates/plugin-typescript-operations` — started (dev-test `githunt/types.ts` parity; config surface + visitor pipeline still partial)
 - [ ] **`plugins/typescript/gql-tag-operations`**
 - [ ] **`plugins/typescript/document-nodes`**
 

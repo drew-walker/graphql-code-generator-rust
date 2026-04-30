@@ -1,8 +1,23 @@
 use std::collections::HashMap;
 use std::fmt;
 
+use graphql_parser::query::Document;
 use serde::de::{self, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
+
+/// Mirrors `Types.DocumentNode` (GraphQL AST).
+///
+/// Upstream uses `graphql`'s `DocumentNode`. We use `graphql-parser`'s owned AST.
+pub type DocumentNode = Document<'static, String>;
+
+/// Mirrors `Types.DocumentFile` from `@graphql-codegen/plugin-helpers`.
+#[derive(Debug, Clone)]
+pub struct DocumentFile {
+    pub location: String,
+    pub document: DocumentNode,
+    /// Upstream supports `standard` and `external`. We keep it optional for parity.
+    pub r#type: Option<String>,
+}
 
 /// Mirrors the TS pattern where a field can be a single string or an array of strings
 /// (e.g. `schema: string | string[]`).

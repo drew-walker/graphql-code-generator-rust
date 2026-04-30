@@ -30,7 +30,7 @@ pub async fn run_cli(cmd: Option<Command>, flags: CliFlags) -> anyhow::Result<i3
             lifecycle_hooks(hooks_config)
                 .on_error(&e.to_string())
                 .await?;
-            Ok(1)
+            Err(e)
         }
     }
 }

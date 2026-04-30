@@ -72,23 +72,23 @@ const config: CodegenConfig = {
   //     documents: './dev-test/githunt/**/*.graphql',
   //     plugins: ['typescript', 'typescript-operations', 'typed-document-node'],
   //   },
-  //   './dev-test/githunt/types.ts': {
-  //     schema: './dev-test/githunt/schema.json',
-  //     documents: './dev-test/githunt/**/*.graphql',
-  //     plugins: ['typescript', 'typescript-operations'],
-  //   },
+    './dev-test/githunt/types.ts': {
+      schema: './dev-test/githunt/schema.json',
+      documents: './dev-test/githunt/**/*.graphql',
+      plugins: ['typescript', 'typescript-operations'],
+    },
   //   './dev-test/githunt/types.preResolveTypes.ts': {
   //     schema: './dev-test/githunt/schema.json',
   //     documents: './dev-test/githunt/**/*.graphql',
   //     config: { preResolveTypes: true },
   //     plugins: ['typescript', 'typescript-operations'],
   //   },
-  //   './dev-test/githunt/types.onlyEnums.ts': {
-  //     schema: './dev-test/githunt/schema.json',
-  //     documents: './dev-test/githunt/**/*.graphql',
-  //     config: { onlyEnums: true },
-  //     plugins: ['typescript'],
-  //   },
+    './dev-test/githunt/types.onlyEnums.ts': {
+      schema: './dev-test/githunt/schema.json',
+      documents: './dev-test/githunt/**/*.graphql',
+      config: { onlyEnums: true },
+      plugins: ['typescript'],
+    },
   //   './dev-test/githunt/types.preResolveTypes.onlyOperationTypes.ts': {
   //     schema: './dev-test/githunt/schema.json',
   //     documents: './dev-test/githunt/**/*.graphql',
