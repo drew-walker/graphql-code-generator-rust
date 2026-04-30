@@ -56,15 +56,15 @@ All paths below are under [`graphql-code-generator` → `packages/`](https://git
 **`plugins/typescript/*`**
 
 - [ ] **`plugins/typescript/typescript`** → `crates/plugin-typescript` — started (upstream-aligned module layout + plugin output shape; partial visitor parity)
-- [ ] **`plugins/typescript/typed-document-node`**
+- [ ] **`plugins/typescript/typed-document-node`** → `crates/plugin-typed-document-node` — started (dev-test `githunt/typed-document-nodes.ts` parity; upstream-style extension points added)
 - [ ] **`plugins/typescript/resolvers`**
-- [ ] **`plugins/typescript/operations`** → `crates/plugin-typescript-operations` — started (dev-test `githunt/types.ts` parity; config surface + visitor pipeline still partial)
+- [ ] **`plugins/typescript/operations`** → `crates/plugin-typescript-operations` — started (dev-test `githunt/types.ts` + `star-wars/types.ts` parity; config surface + visitor pipeline still partial)
 - [ ] **`plugins/typescript/gql-tag-operations`**
 - [ ] **`plugins/typescript/document-nodes`**
 
 **`plugins/other/*`**
 
-- [ ] **`plugins/other/visitor-plugin-common`** → `crates/visitor-plugin-common` — started (`utils` only)
+- [ ] **`plugins/other/visitor-plugin-common`** → `crates/visitor-plugin-common` — started (`utils` + client-side document-node helpers; still partial)
 - [ ] **`plugins/other/add`**
 - [ ] **`plugins/other/fragment-matcher`**
 - [ ] **`plugins/other/introspection`**
