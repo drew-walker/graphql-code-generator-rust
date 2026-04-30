@@ -2,6 +2,7 @@ use clap::Subcommand;
 
 use crate::config::{CliFlags, create_context};
 use crate::generate_and_save::generate;
+use crate::hooks::lifecycle_hooks;
 use crate::init::init;
 
 #[derive(Subcommand)]
@@ -17,8 +18,19 @@ pub async fn run_cli(cmd: Option<Command>, flags: CliFlags) -> anyhow::Result<i3
         return Ok(0);
     }
 
-    let context = create_context(flags).await?;
-    generate(context, true).await?;
-    // TODO: Check for checkMode and log if files are stale
-    Ok(0)
+    let mut context = create_context(flags).await?;
+    let hooks_config = context.get_config().hooks.clone();
+
+    match generate(context, true).await {
+        Ok(()) => {
+            // TODO: Check for checkMode and log if files are stale
+            Ok(0)
+        }
+        Err(e) => {
+            lifecycle_hooks(hooks_config)
+                .on_error(&e.to_string())
+                .await?;
+            Ok(1)
+        }
+    }
 }

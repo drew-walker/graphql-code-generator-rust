@@ -10,6 +10,55 @@ pub fn wrap_with_single_quotes(value: WrapInput<'_>, skip_numeric_check: bool) -
     }
 }
 
+/// Mirrors upstream `transformComment` (`packages/plugins/other/visitor-plugin-common/src/utils.ts`).
+pub fn transform_comment(description: &str, indent_level: usize, disabled: bool) -> String {
+    if disabled || description.is_empty() {
+        return String::new();
+    }
+
+    let comment = description.replace("*/", "*\\/");
+    let lines: Vec<&str> = comment.split('\n').collect();
+    let indent = "  ".repeat(indent_level);
+
+    if lines.len() == 1 {
+        return format!("{indent}/** {} */\n", strip_trailing_spaces(lines[0]));
+    }
+
+    // Mirrors upstream:
+    // lines = ['/**', ...lines.map(line => ` * ${line}`), ' */\n'];
+    // return stripTrailingSpaces(lines.map(line => indent(line, indentLevel)).join('\n'));
+    let mut out_lines: Vec<String> = Vec::with_capacity(lines.len() + 2);
+    out_lines.push("/**".to_string());
+    for line in lines {
+        out_lines.push(format!(" * {}", strip_trailing_spaces(line)));
+    }
+    out_lines.push(" */\n".to_string());
+
+    let joined = out_lines
+        .into_iter()
+        .map(|l| format!("{indent}{l}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    strip_trailing_spaces_multiline(joined)
+}
+
+fn strip_trailing_spaces(s: &str) -> &str {
+    s.trim_end_matches([' ', '\t', '\r'])
+}
+
+fn strip_trailing_spaces_multiline(s: String) -> String {
+    // Like upstream `stripTrailingSpaces`: trim trailing whitespace on each line, preserve newlines.
+    // We operate on '\n' boundaries; the final output should keep the same newline structure.
+    let mut out = String::with_capacity(s.len());
+    for (i, line) in s.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(strip_trailing_spaces(line));
+    }
+    out
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum WrapInput<'a> {
     Str(&'a str),

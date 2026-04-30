@@ -50,7 +50,7 @@ pub async fn generate(input: CodegenContext, save_to_file: bool) -> Result<()> {
             return Ok(generation_result);
         }
 
-        if config.watch {
+        if config.watch.is_truthy() {
             remove_stale_files(
                 context,
                 config,
@@ -180,7 +180,7 @@ pub async fn generate(input: CodegenContext, save_to_file: bool) -> Result<()> {
     }
 
     // watch mode
-    if config.watch {
+    if config.watch.is_truthy() {
         let watcher = create_watcher(context.clone(), |_outputs| Box::pin(async { Ok(vec![]) }));
         // Stub: real impl would await this; drop for now so callers get `Ok(())` without unused-value warnings.
         drop(watcher.running_watcher);

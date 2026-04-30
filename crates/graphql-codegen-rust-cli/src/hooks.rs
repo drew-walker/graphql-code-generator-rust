@@ -14,12 +14,31 @@ pub fn lifecycle_hooks(config: HooksConfig) -> LifecycleHooks {
 
 impl LifecycleHooks {
     pub async fn after_start(&self) -> Result<()> {
-        self.execute_hooks("afterStart", &[]).await?;
+        self.execute_hooks("afterStart", &[], None).await?;
         Ok(())
     }
 
     pub async fn before_all_file_write(&self, filenames: Vec<String>) -> Result<()> {
-        self.execute_hooks("beforeAllFileWrite", &filenames).await?;
+        self.execute_hooks("beforeAllFileWrite", &filenames, None)
+            .await?;
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub async fn on_watch_triggered(&self, event: &str, path: &str) -> Result<()> {
+        // Wired when watch mode is implemented (mirrors upstream watcher.ts calling this hook).
+        self.execute_hooks(
+            "onWatchTriggered",
+            &[event.to_string(), path.to_string()],
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn on_error(&self, error: &str) -> Result<()> {
+        self.execute_hooks("onError", &[error.to_string()], None)
+            .await?;
         Ok(())
     }
 
@@ -28,33 +47,47 @@ impl LifecycleHooks {
         absolute_path: &str,
         content: String,
     ) -> Result<String> {
-        self.execute_hooks("beforeOneFileWrite", &[absolute_path.to_string()])
+        // Upstream supports "alter hooks" (function hooks) that can return a new content string.
+        // Our Rust config currently only supports string hooks (shell commands), so content is
+        // unchanged unless/until function hooks are supported.
+        let result = self
+            .execute_hooks(
+                "beforeOneFileWrite",
+                &[absolute_path.to_string()],
+                Some(content.clone()),
+            )
             .await?;
-        Ok(content)
+        Ok(result.unwrap_or(content))
     }
 
     pub async fn after_one_file_write(&self, filename: &str) -> Result<()> {
-        self.execute_hooks("afterOneFileWrite", &[filename.to_string()])
+        self.execute_hooks("afterOneFileWrite", &[filename.to_string()], None)
             .await?;
         Ok(())
     }
 
     pub async fn after_all_file_write(&self, filenames: Vec<String>) -> Result<()> {
-        self.execute_hooks("afterAllFileWrite", &filenames).await?;
+        self.execute_hooks("afterAllFileWrite", &filenames, None)
+            .await?;
         Ok(())
     }
 
     pub async fn before_done(&self) -> Result<()> {
-        self.execute_hooks("beforeDone", &[]).await?;
+        self.execute_hooks("beforeDone", &[], None).await?;
         Ok(())
     }
 
-    async fn execute_hooks(&self, key: &str, args: &[String]) -> Result<()> {
+    async fn execute_hooks(
+        &self,
+        key: &str,
+        args: &[String],
+        initial_state: Option<String>,
+    ) -> Result<Option<String>> {
         let commands = self.get_commands(key);
         for command in commands {
             self.exec_shell_command(&command, args).await?;
         }
-        Ok(())
+        Ok(initial_state)
     }
 
     fn get_commands(&self, key: &str) -> Vec<String> {

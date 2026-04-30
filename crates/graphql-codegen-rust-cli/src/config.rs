@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use plugin_helpers::profiler::{Profiler, create_noop_profiler, create_profiler};
 use plugin_helpers::schema_input::SchemaGenerationInput;
-use plugin_helpers::types::{Config, PluginContext};
+use plugin_helpers::types::{Config, PluginContext, WatchValue};
 
 #[derive(Debug, Clone, Default, Args)]
 pub struct CliFlags {
@@ -188,7 +188,7 @@ pub async fn load_context(config_file_path: Option<PathBuf>) -> Result<CodegenCo
 pub async fn load_codegen_config(
     options: LoadCodegenConfigOptions,
 ) -> Result<Option<LoadCodegenConfigResult>> {
-    let config_file_path = options
+    let mut config_file_path = options
         .config_file_path
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
@@ -197,8 +197,22 @@ pub async fn load_codegen_config(
         .unwrap_or(false);
 
     if is_dir {
-        // TODO: implement cosmiconfig-style directory search (cosmi.search).
-        return Ok(None);
+        // Mirrors `cosmiconfig(...).search()` for `codegen`.
+        let search_places = generate_search_places("codegen");
+        for filename in search_places {
+            let candidate = config_file_path.join(&filename);
+            if std::fs::metadata(&candidate).is_ok() {
+                config_file_path = candidate;
+                break;
+            }
+        }
+        // If we didn't find anything, align with upstream "no result".
+        if std::fs::metadata(&config_file_path)
+            .map(|m| m.is_dir())
+            .unwrap_or(false)
+        {
+            return Ok(None);
+        }
     }
 
     let ext = config_file_path
@@ -334,7 +348,7 @@ impl CodegenContext {
 
     /// Mirrors TS `CodegenContext.loadSchema` — returns a Rust-native schema bundle for plugins.
     pub async fn load_schema(&self, pointers: &[String]) -> Result<SchemaGenerationInput> {
-        crate::load::load_schema_for_pointers(&self.cwd, pointers).await
+        crate::load::load_schema(&self.cwd, pointers).await
     }
 
     pub fn get_config(&mut self) -> Config {
@@ -403,7 +417,14 @@ pub fn update_context_with_cli_flags(context: &mut CodegenContext) {
 
     // watch
     if !flags.watch.is_empty() {
-        patch.watch = Some(true);
+        // See `CliFlags.watch` docstring for mapping rules.
+        if flags.watch.len() == 1 && flags.watch[0] == "__WATCH_TRUE__" {
+            patch.watch = Some(WatchValue::Bool(true));
+        } else if flags.watch.len() == 1 {
+            patch.watch = Some(WatchValue::String(flags.watch[0].clone()));
+        } else {
+            patch.watch = Some(WatchValue::Strings(flags.watch.clone()));
+        }
     }
 
     if flags.overwrite {
@@ -456,7 +477,7 @@ pub fn update_context_with_cli_flags(context: &mut CodegenContext) {
 /// A small "partial Types.Config" patch object, mirroring TS' `Partial<Types.Config & { configFilePath?: string }>`
 #[derive(Debug, Clone, Default)]
 pub struct PartialConfig {
-    pub watch: Option<bool>,
+    pub watch: Option<WatchValue>,
     pub overwrite: Option<bool>,
     pub silent: Option<bool>,
     pub errors_only: Option<bool>,

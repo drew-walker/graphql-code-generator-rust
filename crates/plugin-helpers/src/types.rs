@@ -105,8 +105,8 @@ pub enum OutputConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Config {
-    /// Mirrors TS: `watch: boolean | string | string[]` (simplified to bool for now).
-    pub watch: bool,
+    /// Mirrors TS: `watch: boolean | string | string[]`.
+    pub watch: WatchValue,
     pub overwrite: Option<bool>,
     pub silent: Option<bool>,
     pub errors_only: Option<bool>,
@@ -135,10 +135,35 @@ pub struct Config {
     pub generates: HashMap<String, OutputConfig>,
 }
 
+/// Mirrors TS `Types.Config['watch']`: `boolean | string | string[]`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum WatchValue {
+    Bool(bool),
+    String(String),
+    Strings(Vec<String>),
+}
+
+impl Default for WatchValue {
+    fn default() -> Self {
+        Self::Bool(false)
+    }
+}
+
+impl WatchValue {
+    pub fn is_truthy(&self) -> bool {
+        match self {
+            Self::Bool(b) => *b,
+            Self::String(s) => !s.is_empty(),
+            Self::Strings(v) => !v.is_empty(),
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
-            watch: false,
+            watch: WatchValue::default(),
             overwrite: None,
             silent: None,
             errors_only: None,

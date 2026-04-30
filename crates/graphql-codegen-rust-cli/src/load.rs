@@ -9,16 +9,13 @@ use serde_json::Value;
 
 /// Loads a GraphQL schema from string pointers (paths relative to `cwd`), matching the
 /// single-string-pointer case of TS `loadSchema` / `context.loadSchema`.
-pub async fn load_schema_for_pointers(
-    cwd: &Path,
-    pointers: &[String],
-) -> Result<SchemaGenerationInput> {
+pub async fn load_schema(cwd: &Path, pointers: &[String]) -> Result<SchemaGenerationInput> {
     if pointers.is_empty() {
-        anyhow::bail!("load_schema_for_pointers: empty schema pointers");
+        anyhow::bail!("load_schema: empty schema pointers");
     }
     if pointers.len() > 1 {
         anyhow::bail!(
-            "load_schema_for_pointers: multiple schema pointers not supported yet (got {})",
+            "load_schema: multiple schema pointers not supported yet (got {})",
             pointers.len()
         );
     }
@@ -32,10 +29,7 @@ pub async fn load_schema_for_pointers(
 
     match ext.as_str() {
         "json" => load_introspection_json(&path),
-        "graphql" | "gql" => anyhow::bail!(
-            "GraphQL SDL schema files are not supported yet: {} (use .json or .js for now)",
-            path.display()
-        ),
+        "graphql" | "gql" => load_schema_graphql_file_loader(&path).await,
         "js" | "cjs" | "mjs" => load_schema_js(&path).await,
         _ => anyhow::bail!(
             "Unsupported schema file for {} (expected .json, .graphql, or .js)",
@@ -76,7 +70,7 @@ fn extract_introspection_schema(v: &Value) -> Option<Value> {
 }
 
 /// Loads a JS/CJS module that exports a `GraphQLSchema` (same shapes as `@graphql-tools/code-file-loader`).
-/// Uses `graphql` from `node_modules` (install `graphql` under `dev-test/` for dogfooding).
+/// Requires `graphql` to be resolvable from the schema file’s execution context (`node_modules`).
 async fn load_schema_js(path: &Path) -> Result<SchemaGenerationInput> {
     let abs = path
         .canonicalize()
@@ -120,6 +114,55 @@ async fn load_schema_js(path: &Path) -> Result<SchemaGenerationInput> {
     Ok(SchemaGenerationInput {
         introspection,
         enum_internal_values,
+    })
+}
+
+/// Loads a `.graphql`/`.gql` schema file (mirrors upstream `GraphQLFileLoader` branch),
+/// then returns `introspectionFromSchema(schema).__schema`.
+///
+/// Upstream reference:
+/// - `packages/graphql-codegen-cli/src/load.ts` → `loadSchema()` → loaders include `new GraphQLFileLoader()`.
+///
+/// Implementation note: upstream uses `@graphql-tools/load` + `GraphQLFileLoader`. We shell out to
+/// Node with `graphql`'s `buildSchema` for now.
+async fn load_schema_graphql_file_loader(path: &Path) -> Result<SchemaGenerationInput> {
+    let abs = path
+        .canonicalize()
+        .with_context(|| format!("schema file not found: {}", path.display()))?;
+
+    let output = tokio::process::Command::new("node")
+        .current_dir(
+            abs.parent()
+                .context("schema path has no parent directory")?,
+        )
+        .env("CODEGEN_SCHEMA_PATH", abs.as_os_str())
+        .arg("-e")
+        .arg(GRAPHQL_FILE_LOADER_SCRIPT_CJS)
+        .output()
+        .await
+        .context("failed to spawn `node` for SDL schema load — is Node installed?")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "failed to load SDL schema {}: {}",
+            abs.display(),
+            stderr.trim()
+        );
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Value =
+        serde_json::from_str(stdout.trim()).context("failed to parse SDL schema loader JSON")?;
+
+    let introspection = parsed
+        .get("__schema")
+        .cloned()
+        .context("SDL schema loader JSON missing `__schema`")?;
+
+    Ok(SchemaGenerationInput {
+        introspection,
+        enum_internal_values: HashMap::new(),
     })
 }
 
@@ -188,4 +231,21 @@ for (const typeName of Object.keys(typeMap)) {
 }
 
 process.stdout.write(JSON.stringify({ __schema: intro.__schema, enumInternalValues }));
+"#;
+
+/// CommonJS one-shot: reads `CODEGEN_SCHEMA_PATH`, reads SDL, builds schema, introspects, prints JSON.
+const GRAPHQL_FILE_LOADER_SCRIPT_CJS: &str = r#"
+const fs = require('fs');
+const { buildSchema, introspectionFromSchema } = require('graphql');
+
+const absPath = process.env.CODEGEN_SCHEMA_PATH;
+if (!absPath) {
+  process.stderr.write('CODEGEN_SCHEMA_PATH is not set');
+  process.exit(1);
+}
+
+const sdl = fs.readFileSync(absPath, 'utf8');
+const schema = buildSchema(sdl);
+const intro = introspectionFromSchema(schema);
+process.stdout.write(JSON.stringify({ __schema: intro.__schema }));
 "#;

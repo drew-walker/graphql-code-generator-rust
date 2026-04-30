@@ -5,6 +5,7 @@ use plugin_helpers::schema_input::SchemaGenerationInput;
 use plugin_helpers::types::ComplexPluginOutput;
 
 use crate::config::TypeScriptPluginConfig;
+use crate::introspection_visitor::TsIntrospectionVisitor;
 use crate::visitor::TsVisitor;
 
 /// Merges `prepend` + `content` the way `@graphql-codegen/core` does before writing a file.
@@ -34,7 +35,8 @@ pub fn plugin(
     prepend.retain(|s| !s.is_empty());
 
     let scalars = visitor.scalars_definition();
-    let definitions = visitor.build_definitions_from_introspection()?;
+    let introspection_visitor = TsIntrospectionVisitor::new(schema, config);
+    let definitions = introspection_visitor.build_definitions_from_introspection()?;
 
     let content = [scalars, definitions]
         .into_iter()
