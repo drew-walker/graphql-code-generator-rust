@@ -63,7 +63,8 @@ impl<'a> TsIntrospectionVisitor<'a> {
                 // not `onlyOperationTypes` (see visitor-plugin-common `base-types-visitor.ts`).
                 self.ts_visitor
                     .emit_input_object_type_from_introspection(&mut out, t)?;
-            } else if !self.ts_visitor.config.only_enums && !self.ts_visitor.config.only_operation_types
+            } else if !self.ts_visitor.config.only_enums
+                && !self.ts_visitor.config.only_operation_types
             {
                 match kind {
                     "OBJECT" => self

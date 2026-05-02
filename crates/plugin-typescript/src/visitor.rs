@@ -185,10 +185,66 @@ impl<'a> TsVisitor<'a> {
             out.push_str(&transform_comment(description, 0, false));
         }
 
-        out.push_str(&format!("export enum {name} {{\n"));
-
         let mut enum_values: Vec<&Value> = values.iter().collect();
         enum_values.sort_by_key(|ev| ev.get("name").and_then(|n| n.as_str()).unwrap_or(""));
+
+        if self.config.enums_as_types {
+            let any_value_description = enum_values.iter().any(|ev| {
+                ev.get("description")
+                    .and_then(|d| d.as_str())
+                    .is_some_and(|s| !s.is_empty())
+            });
+
+            if any_value_description {
+                out.push_str(&format!("export type {name} =\n"));
+                for ev in &enum_values {
+                    if let Some(description) = ev.get("description").and_then(|d| d.as_str())
+                        && !description.is_empty()
+                    {
+                        out.push_str(&transform_comment(description, 1, false));
+                    }
+
+                    let gql_name = ev
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .context("enum value without name")?;
+                    let serialized = overrides
+                        .get(name)
+                        .and_then(|m| m.get(gql_name))
+                        .map(|s| s.as_str())
+                        .unwrap_or(gql_name);
+                    let skip_numeric_check =
+                        overrides.get(name).and_then(|m| m.get(gql_name)).is_some();
+                    let lit =
+                        wrap_with_single_quotes(WrapInput::Str(serialized), skip_numeric_check);
+                    out.push_str(&format!("  | {lit}\n"));
+                }
+                out.push_str(";\n\n");
+            } else {
+                let mut parts: Vec<String> = Vec::with_capacity(enum_values.len());
+                for ev in &enum_values {
+                    let gql_name = ev
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .context("enum value without name")?;
+                    let serialized = overrides
+                        .get(name)
+                        .and_then(|m| m.get(gql_name))
+                        .map(|s| s.as_str())
+                        .unwrap_or(gql_name);
+                    let skip_numeric_check =
+                        overrides.get(name).and_then(|m| m.get(gql_name)).is_some();
+                    parts.push(wrap_with_single_quotes(
+                        WrapInput::Str(serialized),
+                        skip_numeric_check,
+                    ));
+                }
+                out.push_str(&format!("export type {name} = {};\n\n", parts.join(" | ")));
+            }
+            return Ok(());
+        }
+
+        out.push_str(&format!("export enum {name} {{\n"));
 
         for ev in enum_values {
             if let Some(description) = ev.get("description").and_then(|d| d.as_str())
@@ -422,10 +478,8 @@ impl<'a> TsVisitor<'a> {
                         .and_then(|n| n.as_str())
                         .context("arg without name")?;
                     let arg_type = arg.get("type").context("arg without type")?;
-                    let (arg_optional, arg_ts) = graphql_input_field_type_to_ts_field(
-                        arg_type,
-                        self.config.immutable_types,
-                    );
+                    let (arg_optional, arg_ts) =
+                        graphql_input_field_type_to_ts_field(arg_type, self.config.immutable_types);
                     let arg_q = if arg_optional && !self.config.avoid_optionals {
                         "?"
                     } else {
@@ -484,13 +538,19 @@ impl<'a> TsVisitor<'a> {
                 ""
             };
 
+            let ro = if self.config.immutable_types {
+                "readonly "
+            } else {
+                ""
+            };
+
             if let Some(desc) = fdesc
                 && !desc.is_empty()
             {
                 out.push_str(&transform_comment(desc, 1, false));
             }
 
-            out.push_str(&format!("  {fname}{q}: {ts};\n"));
+            out.push_str(&format!("  {ro}{fname}{q}: {ts};\n"));
         }
         out.push_str("};\n\n");
         Ok(())
@@ -580,20 +640,15 @@ pub(crate) fn graphql_input_field_type_to_ts_field(t: &Value, immutable: bool) -
 }
 
 fn output_type_non_null(t: &Value, immutable: bool) -> String {
-    let array_ty = if immutable {
-        "ReadonlyArray"
-    } else {
-        "Array"
-    };
+    let array_ty = if immutable { "ReadonlyArray" } else { "Array" };
     match t.get("kind").and_then(|k| k.as_str()) {
         Some("LIST") => {
             let inner = t.get("ofType").expect("LIST.ofType");
-            format!(
-                "{array_ty}<{}>",
-                output_list_element_type(inner, immutable)
-            )
+            format!("{array_ty}<{}>", output_list_element_type(inner, immutable))
         }
-        Some("NON_NULL") => output_type_non_null(t.get("ofType").expect("NON_NULL.ofType"), immutable),
+        Some("NON_NULL") => {
+            output_type_non_null(t.get("ofType").expect("NON_NULL.ofType"), immutable)
+        }
         Some("SCALAR") => {
             let scalar = t.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
             format!("Scalars['{scalar}']['output']")
@@ -608,20 +663,15 @@ fn output_type_non_null(t: &Value, immutable: bool) -> String {
 }
 
 fn input_type_non_null(t: &Value, immutable: bool) -> String {
-    let array_ty = if immutable {
-        "ReadonlyArray"
-    } else {
-        "Array"
-    };
+    let array_ty = if immutable { "ReadonlyArray" } else { "Array" };
     match t.get("kind").and_then(|k| k.as_str()) {
         Some("LIST") => {
             let inner = t.get("ofType").expect("LIST.ofType");
-            format!(
-                "{array_ty}<{}>",
-                input_list_element_type(inner, immutable)
-            )
+            format!("{array_ty}<{}>", input_list_element_type(inner, immutable))
         }
-        Some("NON_NULL") => input_type_non_null(t.get("ofType").expect("NON_NULL.ofType"), immutable),
+        Some("NON_NULL") => {
+            input_type_non_null(t.get("ofType").expect("NON_NULL.ofType"), immutable)
+        }
         Some("SCALAR") => {
             let scalar = t.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
             format!("Scalars['{scalar}']['input']")

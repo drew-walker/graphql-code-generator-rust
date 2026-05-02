@@ -7,11 +7,28 @@ use crate::visitor::{TypeRef, parse_ast_type_ref};
 pub struct TypeScriptOperationVariablesToObject<'a> {
     pub is_enum: &'a dyn Fn(&str) -> bool,
     pub is_scalar: &'a dyn Fn(&str) -> bool,
+    pub immutable_types: bool,
 }
 
 impl<'a> TypeScriptOperationVariablesToObject<'a> {
-    pub fn new(is_enum: &'a dyn Fn(&str) -> bool, is_scalar: &'a dyn Fn(&str) -> bool) -> Self {
-        Self { is_enum, is_scalar }
+    pub fn new(
+        is_enum: &'a dyn Fn(&str) -> bool,
+        is_scalar: &'a dyn Fn(&str) -> bool,
+        immutable_types: bool,
+    ) -> Self {
+        Self {
+            is_enum,
+            is_scalar,
+            immutable_types,
+        }
+    }
+
+    fn list_wrapper(&self) -> &'static str {
+        if self.immutable_types {
+            "ReadonlyArray"
+        } else {
+            "Array"
+        }
     }
 
     fn scalar_input_ts(name: &str) -> String {
@@ -21,7 +38,9 @@ impl<'a> TypeScriptOperationVariablesToObject<'a> {
     fn input_ts(&self, type_ref: &TypeRef) -> String {
         match type_ref {
             TypeRef::NonNull(inner) => self.input_ts(inner),
-            TypeRef::List(inner) => format!("Array<{}>", self.input_ts(inner)),
+            TypeRef::List(inner) => {
+                format!("{}<{}>", self.list_wrapper(), self.input_ts(inner))
+            }
             TypeRef::Named(name) => format!(
                 "InputMaybe<{}>",
                 if (self.is_enum)(name) {
@@ -39,7 +58,9 @@ impl<'a> TypeScriptOperationVariablesToObject<'a> {
         let optional = !matches!(type_ref, TypeRef::NonNull(_));
         let ts = match type_ref {
             TypeRef::NonNull(inner) => match inner.as_ref() {
-                TypeRef::List(l) => format!("Array<{}>", self.input_ts(l)),
+                TypeRef::List(l) => {
+                    format!("{}<{}>", self.list_wrapper(), self.input_ts(l))
+                }
                 TypeRef::Named(name) => {
                     if (self.is_enum)(name) {
                         name.clone()
@@ -51,7 +72,11 @@ impl<'a> TypeScriptOperationVariablesToObject<'a> {
                 }
                 TypeRef::NonNull(_) => self.input_ts(inner),
             },
-            TypeRef::List(inner) => format!("InputMaybe<Array<{}>>", self.input_ts(inner)),
+            TypeRef::List(inner) => format!(
+                "InputMaybe<{}<{}>>",
+                self.list_wrapper(),
+                self.input_ts(inner)
+            ),
             TypeRef::Named(name) => format!(
                 "InputMaybe<{}>",
                 if (self.is_enum)(name) {

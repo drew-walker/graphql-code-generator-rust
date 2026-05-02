@@ -277,11 +277,12 @@ impl<'a> TypeScriptDocumentsVisitor<'a> {
     fn operation_variables_ts(&self, op: &OperationDefinition<'static, String>) -> Result<String> {
         let is_enum = |n: &str| self.is_enum(n);
         let is_scalar = |n: &str| self.is_scalar(n);
-        let transformer = TypeScriptOperationVariablesToObject::new(&is_enum, &is_scalar);
-        Ok(transformer.transform_operation_variables(
-            op,
-            self.config.avoid_optionals,
-        ))
+        let transformer = TypeScriptOperationVariablesToObject::new(
+            &is_enum,
+            &is_scalar,
+            self.config.immutable_types,
+        );
+        Ok(transformer.transform_operation_variables(op, self.config.avoid_optionals))
     }
 
     fn selection_set_object_ts(

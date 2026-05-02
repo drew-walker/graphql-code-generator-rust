@@ -134,8 +134,11 @@ pub(crate) fn collect_selections_into(
                         }
                         Ok("any".to_string())
                     };
-                    let (mut optional, ts) =
-                        output_field(&field_type_ref, &base_ts_for_named, v.config.immutable_types)?;
+                    let (mut optional, ts) = output_field(
+                        &field_type_ref,
+                        &base_ts_for_named,
+                        v.config.immutable_types,
+                    )?;
                     if has_conditional_directives(&f.directives) {
                         optional = true;
                     }
