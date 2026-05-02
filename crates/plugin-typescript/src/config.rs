@@ -25,6 +25,8 @@ pub struct TypeScriptPluginConfig {
     #[serde(default)]
     pub avoid_optionals: Option<bool>,
     #[serde(default)]
+    pub immutable_types: Option<bool>,
+    #[serde(default)]
     pub wrap_field_definitions: Option<bool>,
     #[serde(default)]
     pub wrap_entire_field_definitions: Option<bool>,
@@ -46,6 +48,7 @@ pub struct TypeScriptPluginParsedConfig {
     pub only_operation_types: bool,
     pub no_export: bool,
     pub avoid_optionals: bool,
+    pub immutable_types: bool,
     pub wrap_field_definitions: bool,
     pub wrap_entire_field_definitions: bool,
 }
@@ -65,6 +68,7 @@ impl TypeScriptPluginParsedConfig {
             only_operation_types: get_config_value(raw.only_operation_types.as_ref(), false),
             no_export: get_config_value(raw.no_export.as_ref(), false),
             avoid_optionals: get_config_value(raw.avoid_optionals.as_ref(), false),
+            immutable_types: get_config_value(raw.immutable_types.as_ref(), false),
             wrap_field_definitions: get_config_value(raw.wrap_field_definitions.as_ref(), false),
             wrap_entire_field_definitions: get_config_value(
                 raw.wrap_entire_field_definitions.as_ref(),

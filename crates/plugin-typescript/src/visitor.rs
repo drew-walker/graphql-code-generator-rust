@@ -255,7 +255,11 @@ impl<'a> TsVisitor<'a> {
             }
             out.push_str(" & {\n");
         }
-        out.push_str("  __typename?: '");
+        if self.config.immutable_types {
+            out.push_str("  readonly __typename?: '");
+        } else {
+            out.push_str("  __typename?: '");
+        }
         out.push_str(name);
         out.push_str("';\n");
 
@@ -271,7 +275,8 @@ impl<'a> TsVisitor<'a> {
                     .context("field without name")?;
                 let fdesc = f.get("description").and_then(|d| d.as_str());
                 let ftype = f.get("type").context("field without type")?;
-                let (optional, ts) = graphql_output_field_type_to_ts_field(ftype);
+                let (optional, ts) =
+                    graphql_output_field_type_to_ts_field(ftype, self.config.immutable_types);
                 let q = if optional && !self.config.avoid_optionals {
                     "?"
                 } else {
@@ -284,7 +289,12 @@ impl<'a> TsVisitor<'a> {
                     out.push_str(&transform_comment(desc, 1, false));
                 }
 
-                out.push_str(&format!("  {fname}{q}: {ts};\n"));
+                let ro = if self.config.immutable_types {
+                    "readonly "
+                } else {
+                    ""
+                };
+                out.push_str(&format!("  {ro}{fname}{q}: {ts};\n"));
 
                 let args = f.get("args").and_then(|a| a.as_array());
                 if let Some(args) = args
@@ -309,7 +319,10 @@ impl<'a> TsVisitor<'a> {
                             .and_then(|n| n.as_str())
                             .context("arg without name")?;
                         let arg_type = arg.get("type").context("arg without type")?;
-                        let (arg_optional, arg_ts) = graphql_input_field_type_to_ts_field(arg_type);
+                        let (arg_optional, arg_ts) = graphql_input_field_type_to_ts_field(
+                            arg_type,
+                            self.config.immutable_types,
+                        );
                         let arg_q = if arg_optional && !self.config.avoid_optionals {
                             "?"
                         } else {
@@ -366,7 +379,8 @@ impl<'a> TsVisitor<'a> {
                 .context("field without name")?;
             let fdesc = f.get("description").and_then(|d| d.as_str());
             let ftype = f.get("type").context("field without type")?;
-            let (optional, ts) = graphql_output_field_type_to_ts_field(ftype);
+            let (optional, ts) =
+                graphql_output_field_type_to_ts_field(ftype, self.config.immutable_types);
             let q = if optional && !self.config.avoid_optionals {
                 "?"
             } else {
@@ -379,7 +393,12 @@ impl<'a> TsVisitor<'a> {
                 out.push_str(&transform_comment(desc, 1, false));
             }
 
-            out.push_str(&format!("  {fname}{q}: {ts};\n"));
+            let ro = if self.config.immutable_types {
+                "readonly "
+            } else {
+                ""
+            };
+            out.push_str(&format!("  {ro}{fname}{q}: {ts};\n"));
 
             let args = f.get("args").and_then(|a| a.as_array());
             if let Some(args) = args
@@ -403,7 +422,10 @@ impl<'a> TsVisitor<'a> {
                         .and_then(|n| n.as_str())
                         .context("arg without name")?;
                     let arg_type = arg.get("type").context("arg without type")?;
-                    let (arg_optional, arg_ts) = graphql_input_field_type_to_ts_field(arg_type);
+                    let (arg_optional, arg_ts) = graphql_input_field_type_to_ts_field(
+                        arg_type,
+                        self.config.immutable_types,
+                    );
                     let arg_q = if arg_optional && !self.config.avoid_optionals {
                         "?"
                     } else {
@@ -454,7 +476,8 @@ impl<'a> TsVisitor<'a> {
                 .context("input field without name")?;
             let fdesc = f.get("description").and_then(|d| d.as_str());
             let ftype = f.get("type").context("input field without type")?;
-            let (optional, ts) = graphql_input_field_type_to_ts_field(ftype);
+            let (optional, ts) =
+                graphql_input_field_type_to_ts_field(ftype, self.config.immutable_types);
             let q = if optional && !self.config.avoid_optionals {
                 "?"
             } else {
@@ -528,35 +551,49 @@ pub(crate) fn graphql_enum_value_to_ts_key(name: &str) -> String {
         .collect()
 }
 
-pub(crate) fn graphql_output_field_type_to_ts_field(t: &Value) -> (bool, String) {
+pub(crate) fn graphql_output_field_type_to_ts_field(t: &Value, immutable: bool) -> (bool, String) {
     if t.get("kind").and_then(|k| k.as_str()) == Some("NON_NULL") {
         (
             false,
-            output_type_non_null(t.get("ofType").expect("NON_NULL.ofType")),
+            output_type_non_null(t.get("ofType").expect("NON_NULL.ofType"), immutable),
         )
     } else {
-        (true, format!("Maybe<{}>", output_type_non_null(t)))
+        (
+            true,
+            format!("Maybe<{}>", output_type_non_null(t, immutable)),
+        )
     }
 }
 
-pub(crate) fn graphql_input_field_type_to_ts_field(t: &Value) -> (bool, String) {
+pub(crate) fn graphql_input_field_type_to_ts_field(t: &Value, immutable: bool) -> (bool, String) {
     if t.get("kind").and_then(|k| k.as_str()) == Some("NON_NULL") {
         (
             false,
-            input_type_non_null(t.get("ofType").expect("NON_NULL.ofType")),
+            input_type_non_null(t.get("ofType").expect("NON_NULL.ofType"), immutable),
         )
     } else {
-        (true, format!("InputMaybe<{}>", input_type_non_null(t)))
+        (
+            true,
+            format!("InputMaybe<{}>", input_type_non_null(t, immutable)),
+        )
     }
 }
 
-fn output_type_non_null(t: &Value) -> String {
+fn output_type_non_null(t: &Value, immutable: bool) -> String {
+    let array_ty = if immutable {
+        "ReadonlyArray"
+    } else {
+        "Array"
+    };
     match t.get("kind").and_then(|k| k.as_str()) {
         Some("LIST") => {
             let inner = t.get("ofType").expect("LIST.ofType");
-            format!("Array<{}>", output_list_element_type(inner))
+            format!(
+                "{array_ty}<{}>",
+                output_list_element_type(inner, immutable)
+            )
         }
-        Some("NON_NULL") => output_type_non_null(t.get("ofType").expect("NON_NULL.ofType")),
+        Some("NON_NULL") => output_type_non_null(t.get("ofType").expect("NON_NULL.ofType"), immutable),
         Some("SCALAR") => {
             let scalar = t.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
             format!("Scalars['{scalar}']['output']")
@@ -570,13 +607,21 @@ fn output_type_non_null(t: &Value) -> String {
     }
 }
 
-fn input_type_non_null(t: &Value) -> String {
+fn input_type_non_null(t: &Value, immutable: bool) -> String {
+    let array_ty = if immutable {
+        "ReadonlyArray"
+    } else {
+        "Array"
+    };
     match t.get("kind").and_then(|k| k.as_str()) {
         Some("LIST") => {
             let inner = t.get("ofType").expect("LIST.ofType");
-            format!("Array<{}>", input_list_element_type(inner))
+            format!(
+                "{array_ty}<{}>",
+                input_list_element_type(inner, immutable)
+            )
         }
-        Some("NON_NULL") => input_type_non_null(t.get("ofType").expect("NON_NULL.ofType")),
+        Some("NON_NULL") => input_type_non_null(t.get("ofType").expect("NON_NULL.ofType"), immutable),
         Some("SCALAR") => {
             let scalar = t.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
             format!("Scalars['{scalar}']['input']")
@@ -590,20 +635,26 @@ fn input_type_non_null(t: &Value) -> String {
     }
 }
 
-fn output_list_element_type(t: &Value) -> String {
+fn output_list_element_type(t: &Value, immutable: bool) -> String {
     if t.get("kind").and_then(|k| k.as_str()) == Some("NON_NULL") {
-        output_type_non_null(t.get("ofType").expect("LIST element NON_NULL.ofType"))
+        output_type_non_null(
+            t.get("ofType").expect("LIST element NON_NULL.ofType"),
+            immutable,
+        )
     } else {
-        let (_, ts) = graphql_output_field_type_to_ts_field(t);
+        let (_, ts) = graphql_output_field_type_to_ts_field(t, immutable);
         ts
     }
 }
 
-fn input_list_element_type(t: &Value) -> String {
+fn input_list_element_type(t: &Value, immutable: bool) -> String {
     if t.get("kind").and_then(|k| k.as_str()) == Some("NON_NULL") {
-        input_type_non_null(t.get("ofType").expect("LIST element NON_NULL.ofType"))
+        input_type_non_null(
+            t.get("ofType").expect("LIST element NON_NULL.ofType"),
+            immutable,
+        )
     } else {
-        let (_, ts) = graphql_input_field_type_to_ts_field(t);
+        let (_, ts) = graphql_input_field_type_to_ts_field(t, immutable);
         ts
     }
 }

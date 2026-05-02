@@ -37,7 +37,11 @@ pub(crate) fn selection_set_object_ts(
     let mut seen_primitive: HashSet<String> = HashSet::new();
     let mut seen_link: HashSet<String> = HashSet::new();
 
-    primitive.push(format!("__typename?: '{parent_type}'"));
+    if v.config.immutable_types {
+        primitive.push(format!("readonly __typename?: '{parent_type}'"));
+    } else {
+        primitive.push(format!("__typename?: '{parent_type}'"));
+    }
     seen_primitive.insert("__typename".to_string());
 
     collect_selections_into(
@@ -66,13 +70,19 @@ pub(crate) fn selection_set_object_ts(
                 }
                 selection_set_object_ts(v, tn, &merged_ss, fragments)
             };
-            let (optional, ts) = output_field(&type_ref, &base_ts_for_named)?;
+            let (optional, ts) =
+                output_field(&type_ref, &base_ts_for_named, v.config.immutable_types)?;
             let q = if optional && !v.config.avoid_optionals {
                 "?"
             } else {
                 ""
             };
-            selections.push(format!("{name}{q}: {ts}"));
+            let ro = if v.config.immutable_types {
+                "readonly "
+            } else {
+                ""
+            };
+            selections.push(format!("{ro}{name}{q}: {ts}"));
         }
     }
 
@@ -124,7 +134,8 @@ pub(crate) fn collect_selections_into(
                         }
                         Ok("any".to_string())
                     };
-                    let (mut optional, ts) = output_field(&field_type_ref, &base_ts_for_named)?;
+                    let (mut optional, ts) =
+                        output_field(&field_type_ref, &base_ts_for_named, v.config.immutable_types)?;
                     if has_conditional_directives(&f.directives) {
                         optional = true;
                     }
@@ -134,7 +145,12 @@ pub(crate) fn collect_selections_into(
                         } else {
                             ""
                         };
-                        ctx.primitive.push(format!("{out_name}{q}: {ts}"));
+                        let ro = if v.config.immutable_types {
+                            "readonly "
+                        } else {
+                            ""
+                        };
+                        ctx.primitive.push(format!("{ro}{out_name}{q}: {ts}"));
                     }
                     continue;
                 }

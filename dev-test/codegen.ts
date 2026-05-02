@@ -119,12 +119,12 @@ const config: CodegenConfig = {
       config: { avoidOptionals: true },
       plugins: ['typescript', 'typescript-operations'],
     },
-  //   './dev-test/githunt/types.immutableTypes.ts': {
-  //     schema: './dev-test/githunt/schema.json',
-  //     documents: './dev-test/githunt/**/*.graphql',
-  //     config: { immutableTypes: true },
-  //     plugins: ['typescript', 'typescript-operations'],
-  //   },
+    './dev-test/githunt/types.immutableTypes.ts': {
+      schema: './dev-test/githunt/schema.json',
+      documents: './dev-test/githunt/**/*.graphql',
+      config: { immutableTypes: true },
+      plugins: ['typescript', 'typescript-operations'],
+    },
     './dev-test/star-wars/types.ts': {
       schema: './dev-test/star-wars/schema.json',
       documents: './dev-test/star-wars/**/*.graphql',

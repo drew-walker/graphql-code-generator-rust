@@ -89,10 +89,19 @@ fn output_ts_nonnull(
 fn output_ts(
     type_ref: &TypeRef,
     base_ts_for_named: &impl Fn(&str) -> Result<String>,
+    immutable_types: bool,
 ) -> Result<String> {
+    let array_ty = if immutable_types {
+        "ReadonlyArray"
+    } else {
+        "Array"
+    };
     match type_ref {
-        TypeRef::NonNull(inner) => output_ts(inner, base_ts_for_named),
-        TypeRef::List(inner) => Ok(format!("Array<{}>", output_ts(inner, base_ts_for_named)?)),
+        TypeRef::NonNull(inner) => output_ts(inner, base_ts_for_named, immutable_types),
+        TypeRef::List(inner) => Ok(format!(
+            "{array_ty}<{}>",
+            output_ts(inner, base_ts_for_named, immutable_types)?
+        )),
         TypeRef::Named(name) => Ok(format!(
             "{} | null",
             output_ts_nonnull(name, base_ts_for_named)?
@@ -103,17 +112,26 @@ fn output_ts(
 pub(crate) fn output_field(
     optionality_ref: &TypeRef,
     base_ts_for_named: &impl Fn(&str) -> Result<String>,
+    immutable_types: bool,
 ) -> Result<(bool, String)> {
+    let array_ty = if immutable_types {
+        "ReadonlyArray"
+    } else {
+        "Array"
+    };
     let optional = !matches!(optionality_ref, TypeRef::NonNull(_));
     let ts = match optionality_ref {
         TypeRef::NonNull(inner) => match inner.as_ref() {
-            TypeRef::List(l) => Ok(format!("Array<{}>", output_ts(l, base_ts_for_named)?)),
+            TypeRef::List(l) => Ok(format!(
+                "{array_ty}<{}>",
+                output_ts(l, base_ts_for_named, immutable_types)?
+            )),
             TypeRef::Named(name) => base_ts_for_named(name),
-            TypeRef::NonNull(_) => output_ts(inner, base_ts_for_named),
+            TypeRef::NonNull(_) => output_ts(inner, base_ts_for_named, immutable_types),
         },
         TypeRef::List(inner) => Ok(format!(
-            "Array<{}> | null",
-            output_ts(inner, base_ts_for_named)?
+            "{array_ty}<{}> | null",
+            output_ts(inner, base_ts_for_named, immutable_types)?
         )),
         TypeRef::Named(name) => Ok(format!("{} | null", base_ts_for_named(name)?)),
     }?;

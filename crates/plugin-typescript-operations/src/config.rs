@@ -15,4 +15,7 @@ pub struct TypeScriptDocumentsPluginConfig {
     /// Mirrors upstream `avoidOptionals` for operation result and variables shapes.
     #[serde(default)]
     pub avoid_optionals: bool,
+    /// Mirrors upstream `immutableTypes` for operation result selection objects.
+    #[serde(default)]
+    pub immutable_types: bool,
 }
