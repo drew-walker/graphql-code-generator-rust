@@ -125,7 +125,7 @@ pub async fn execute_codegen(context: &mut CodegenContext) -> ExecuteCodegenOutp
                     return ExecuteCodegenOutput {
                         result,
                         error: Some(anyhow::anyhow!(
-                            "Unsupported plugin `{other}` for output `{filename}` (only `typescript` is wired)"
+                            "Unsupported plugin `{other}` for output `{filename}`"
                         )),
                     };
                 }

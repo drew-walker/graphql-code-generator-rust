@@ -58,7 +58,9 @@ impl<'a> TsIntrospectionVisitor<'a> {
             let kind = t.get("kind").and_then(|k| k.as_str()).unwrap_or("");
             if kind == "ENUM" {
                 self.ts_visitor.emit_enum_from_introspection(&mut out, t)?;
-            } else if !self.ts_visitor.config.only_enums {
+            } else if !self.ts_visitor.config.only_enums
+                && !self.ts_visitor.config.only_operation_types
+            {
                 match kind {
                     "OBJECT" => self
                         .ts_visitor

@@ -77,24 +77,24 @@ const config: CodegenConfig = {
       documents: './dev-test/githunt/**/*.graphql',
       plugins: ['typescript', 'typescript-operations'],
     },
-  //   './dev-test/githunt/types.preResolveTypes.ts': {
-  //     schema: './dev-test/githunt/schema.json',
-  //     documents: './dev-test/githunt/**/*.graphql',
-  //     config: { preResolveTypes: true },
-  //     plugins: ['typescript', 'typescript-operations'],
-  //   },
+    './dev-test/githunt/types.preResolveTypes.ts': {
+      schema: './dev-test/githunt/schema.json',
+      documents: './dev-test/githunt/**/*.graphql',
+      config: { preResolveTypes: true },
+      plugins: ['typescript', 'typescript-operations'],
+    },
     './dev-test/githunt/types.onlyEnums.ts': {
       schema: './dev-test/githunt/schema.json',
       documents: './dev-test/githunt/**/*.graphql',
       config: { onlyEnums: true },
       plugins: ['typescript'],
     },
-  //   './dev-test/githunt/types.preResolveTypes.onlyOperationTypes.ts': {
-  //     schema: './dev-test/githunt/schema.json',
-  //     documents: './dev-test/githunt/**/*.graphql',
-  //     config: { preResolveTypes: true, onlyOperationTypes: true },
-  //     plugins: ['typescript', 'typescript-operations'],
-  //   },
+    './dev-test/githunt/types.preResolveTypes.onlyOperationTypes.ts': {
+      schema: './dev-test/githunt/schema.json',
+      documents: './dev-test/githunt/**/*.graphql',
+      config: { preResolveTypes: true, onlyOperationTypes: true },
+      plugins: ['typescript', 'typescript-operations'],
+    },
   //   './dev-test/githunt/types.flatten.preResolveTypes.ts': {
   //     schema: './dev-test/githunt/schema.json',
   //     documents: './dev-test/githunt/**/*.graphql',
@@ -146,12 +146,12 @@ const config: CodegenConfig = {
   //     ],
   //     plugins: ['typescript', 'typescript-operations'],
   //   },
-  //   './dev-test/star-wars/types.preResolveTypes.ts': {
-  //     schema: './dev-test/star-wars/schema.json',
-  //     documents: './dev-test/star-wars/**/*.graphql',
-  //     config: { preResolveTypes: true },
-  //     plugins: ['typescript', 'typescript-operations'],
-  //   },
+    './dev-test/star-wars/types.preResolveTypes.ts': {
+      schema: './dev-test/star-wars/schema.json',
+      documents: './dev-test/star-wars/**/*.graphql',
+      config: { preResolveTypes: true },
+      plugins: ['typescript', 'typescript-operations'],
+    },
     './dev-test/star-wars/types.OnlyEnums.ts': {
       schema: './dev-test/star-wars/schema.json',
       documents: './dev-test/star-wars/**/*.graphql',

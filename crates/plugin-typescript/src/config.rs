@@ -17,6 +17,9 @@ pub struct TypeScriptPluginConfig {
     pub input_maybe_value: Option<String>,
     #[serde(default)]
     pub only_enums: Option<bool>,
+    /// When true with `typescript-operations`, emit scalars + wrappers + enums only (no schema object types).
+    #[serde(default)]
+    pub only_operation_types: Option<bool>,
     #[serde(default)]
     pub no_export: Option<bool>,
     #[serde(default)]
@@ -40,6 +43,7 @@ pub struct TypeScriptPluginParsedConfig {
     pub maybe_value: String,
     pub input_maybe_value: String,
     pub only_enums: bool,
+    pub only_operation_types: bool,
     pub no_export: bool,
     pub avoid_optionals: bool,
     pub wrap_field_definitions: bool,
@@ -58,6 +62,7 @@ impl TypeScriptPluginParsedConfig {
             maybe_value,
             input_maybe_value,
             only_enums: get_config_value(raw.only_enums.as_ref(), false),
+            only_operation_types: get_config_value(raw.only_operation_types.as_ref(), false),
             no_export: get_config_value(raw.no_export.as_ref(), false),
             avoid_optionals: get_config_value(raw.avoid_optionals.as_ref(), false),
             wrap_field_definitions: get_config_value(raw.wrap_field_definitions.as_ref(), false),
