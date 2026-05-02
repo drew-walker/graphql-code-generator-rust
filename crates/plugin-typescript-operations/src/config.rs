@@ -12,4 +12,7 @@ pub struct TypeScriptDocumentsPluginConfig {
     pub add_operation_export: bool,
     /// Mirrors upstream `printFieldsOnNewLines` (default false).
     pub print_fields_on_new_lines: bool,
+    /// Mirrors upstream `avoidOptionals` for operation result and variables shapes.
+    #[serde(default)]
+    pub avoid_optionals: bool,
 }

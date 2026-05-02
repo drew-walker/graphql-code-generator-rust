@@ -67,7 +67,11 @@ pub(crate) fn selection_set_object_ts(
                 selection_set_object_ts(v, tn, &merged_ss, fragments)
             };
             let (optional, ts) = output_field(&type_ref, &base_ts_for_named)?;
-            let q = if optional { "?" } else { "" };
+            let q = if optional && !v.config.avoid_optionals {
+                "?"
+            } else {
+                ""
+            };
             selections.push(format!("{name}{q}: {ts}"));
         }
     }
@@ -125,7 +129,11 @@ pub(crate) fn collect_selections_into(
                         optional = true;
                     }
                     if ctx.seen_primitive.insert(out_name.clone()) {
-                        let q = if optional { "?" } else { "" };
+                        let q = if optional && !v.config.avoid_optionals {
+                            "?"
+                        } else {
+                            ""
+                        };
                         ctx.primitive.push(format!("{out_name}{q}: {ts}"));
                     }
                     continue;

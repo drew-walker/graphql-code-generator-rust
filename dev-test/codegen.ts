@@ -113,12 +113,12 @@ const config: CodegenConfig = {
   //     config: { enumsAsTypes: true },
   //     plugins: ['typescript', 'typescript-operations'],
   //   },
-  //   './dev-test/githunt/types.avoidOptionals.ts': {
-  //     schema: './dev-test/githunt/schema.json',
-  //     documents: './dev-test/githunt/**/*.graphql',
-  //     config: { avoidOptionals: true },
-  //     plugins: ['typescript', 'typescript-operations'],
-  //   },
+    './dev-test/githunt/types.avoidOptionals.ts': {
+      schema: './dev-test/githunt/schema.json',
+      documents: './dev-test/githunt/**/*.graphql',
+      config: { avoidOptionals: true },
+      plugins: ['typescript', 'typescript-operations'],
+    },
   //   './dev-test/githunt/types.immutableTypes.ts': {
   //     schema: './dev-test/githunt/schema.json',
   //     documents: './dev-test/githunt/**/*.graphql',
@@ -130,22 +130,22 @@ const config: CodegenConfig = {
       documents: './dev-test/star-wars/**/*.graphql',
       plugins: ['typescript', 'typescript-operations'],
     },
-  //   './dev-test/star-wars/types.excludeQueryAlpha.ts': {
-  //     schema: './dev-test/star-wars/schema.json',
-  //     documents: [
-  //       './dev-test/star-wars/**/*.graphql',
-  //       '!./dev-test/star-wars/**/ExcludeQueryAlpha.graphql',
-  //     ],
-  //     plugins: ['typescript', 'typescript-operations'],
-  //   },
-  //   './dev-test/star-wars/types.excludeQueryBeta.ts': {
-  //     schema: './dev-test/star-wars/schema.json',
-  //     documents: [
-  //       './dev-test/star-wars/**/*.graphql',
-  //       '!./dev-test/star-wars/**/ExcludeQueryBeta.graphql',
-  //     ],
-  //     plugins: ['typescript', 'typescript-operations'],
-  //   },
+    './dev-test/star-wars/types.excludeQueryAlpha.ts': {
+      schema: './dev-test/star-wars/schema.json',
+      documents: [
+        './dev-test/star-wars/**/*.graphql',
+        '!./dev-test/star-wars/**/ExcludeQueryAlpha.graphql',
+      ],
+      plugins: ['typescript', 'typescript-operations'],
+    },
+    './dev-test/star-wars/types.excludeQueryBeta.ts': {
+      schema: './dev-test/star-wars/schema.json',
+      documents: [
+        './dev-test/star-wars/**/*.graphql',
+        '!./dev-test/star-wars/**/ExcludeQueryBeta.graphql',
+      ],
+      plugins: ['typescript', 'typescript-operations'],
+    },
     './dev-test/star-wars/types.preResolveTypes.ts': {
       schema: './dev-test/star-wars/schema.json',
       documents: './dev-test/star-wars/**/*.graphql',
@@ -158,12 +158,12 @@ const config: CodegenConfig = {
       config: { onlyEnums: true },
       plugins: ['typescript'],
     },
-  //   './dev-test/star-wars/types.preResolveTypes.onlyOperationTypes.ts': {
-  //     schema: './dev-test/star-wars/schema.json',
-  //     documents: './dev-test/star-wars/**/*.graphql',
-  //     config: { preResolveTypes: true, onlyOperationTypes: true },
-  //     plugins: ['typescript', 'typescript-operations'],
-  //   },
+    './dev-test/star-wars/types.preResolveTypes.onlyOperationTypes.ts': {
+      schema: './dev-test/star-wars/schema.json',
+      documents: './dev-test/star-wars/**/*.graphql',
+      config: { preResolveTypes: true, onlyOperationTypes: true },
+      plugins: ['typescript', 'typescript-operations'],
+    },
   //   './dev-test/test-schema/types.preResolveTypes.ts': {
   //     schema: './dev-test/test-schema/schema.graphql',
   //     documents: ['query test { testArr1 testArr2 testArr3 }'],

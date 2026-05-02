@@ -260,7 +260,10 @@ impl<'a> TypeScriptDocumentsVisitor<'a> {
         let is_enum = |n: &str| self.is_enum(n);
         let is_scalar = |n: &str| self.is_scalar(n);
         let transformer = TypeScriptOperationVariablesToObject::new(&is_enum, &is_scalar);
-        Ok(transformer.transform_operation_variables(op))
+        Ok(transformer.transform_operation_variables(
+            op,
+            self.config.avoid_optionals,
+        ))
     }
 
     fn selection_set_object_ts(

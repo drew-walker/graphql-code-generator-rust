@@ -69,6 +69,7 @@ impl<'a> TypeScriptOperationVariablesToObject<'a> {
     pub fn transform_operation_variables(
         &self,
         op: &OperationDefinition<'static, String>,
+        avoid_optionals: bool,
     ) -> String {
         let mut vars: Vec<(String, (bool, String))> = Vec::new();
 
@@ -107,7 +108,7 @@ impl<'a> TypeScriptOperationVariablesToObject<'a> {
         let mut inner = String::new();
         inner.push_str("Exact<{\n");
         for (name, (opt, ts)) in vars {
-            let q = if opt { "?" } else { "" };
+            let q = if opt && !avoid_optionals { "?" } else { "" };
             inner.push_str(&format!("  {name}{q}: {ts};\n"));
         }
         inner.push_str("}>");

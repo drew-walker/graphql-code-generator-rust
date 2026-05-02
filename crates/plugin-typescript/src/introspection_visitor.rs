@@ -58,8 +58,12 @@ impl<'a> TsIntrospectionVisitor<'a> {
             let kind = t.get("kind").and_then(|k| k.as_str()).unwrap_or("");
             if kind == "ENUM" {
                 self.ts_visitor.emit_enum_from_introspection(&mut out, t)?;
-            } else if !self.ts_visitor.config.only_enums
-                && !self.ts_visitor.config.only_operation_types
+            } else if kind == "INPUT_OBJECT" && !self.ts_visitor.config.only_enums {
+                // Upstream `BaseTypesVisitor.InputObjectTypeDefinition`: gated on `onlyEnums` only,
+                // not `onlyOperationTypes` (see visitor-plugin-common `base-types-visitor.ts`).
+                self.ts_visitor
+                    .emit_input_object_type_from_introspection(&mut out, t)?;
+            } else if !self.ts_visitor.config.only_enums && !self.ts_visitor.config.only_operation_types
             {
                 match kind {
                     "OBJECT" => self
@@ -68,12 +72,10 @@ impl<'a> TsIntrospectionVisitor<'a> {
                     "INTERFACE" => self
                         .ts_visitor
                         .emit_interface_type_from_introspection(&mut out, t)?,
-                    "INPUT_OBJECT" => self
-                        .ts_visitor
-                        .emit_input_object_type_from_introspection(&mut out, t)?,
                     "UNION" => self
                         .ts_visitor
                         .emit_union_type_from_introspection(&mut out, t)?,
+                    "INPUT_OBJECT" => {}
                     _ => {}
                 }
             }
