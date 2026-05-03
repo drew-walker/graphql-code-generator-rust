@@ -189,8 +189,9 @@ fn pluck_graphql_sources(text: &str) -> Vec<String> {
 ///
 /// Upstream passes `ignore` from `load.ts` into `@graphql-tools/load` as filesystem paths (see
 /// `join(config.cwd, generatePath)`). Those are almost always **literal** output paths, not globs.
-/// We only run the glob engine when the string contains glob metacharacters (same idea as
-/// negated document globs like `!./foo/**/*.graphql`).
+/// `graphql-tools/packages/loaders/graphql-file` and `code-file` pass `globby([include, …ignores.map(v
+/// => "!"+v)])`. When `ignore` is non-empty we mirror that with [`GlobWalkerBuilder::from_patterns`]
+/// on `cwd` plus `!` negated patterns (see `buildIgnoreGlob` there).
 fn pointer_needs_glob_walk(pointer: &str) -> bool {
     pointer
         .chars()
@@ -364,15 +365,68 @@ fn expand_globwalk_matches(
     Ok(merged)
 }
 
-fn add_excluded_path(set: &mut HashSet<PathBuf>, path: PathBuf) {
-    match std::fs::canonicalize(&path) {
-        Ok(c) => {
-            set.insert(c);
-        }
-        Err(_) => {
-            set.insert(path);
+fn path_to_unix_slashes(p: &Path) -> String {
+    p.to_string_lossy().replace('\\', "/")
+}
+
+fn unixify_glob_token(s: &str) -> String {
+    s.strip_prefix("./").unwrap_or(s).replace('\\', "/")
+}
+
+/// Same as `buildIgnoreGlob(unixify(v))` in `graphql-tools/packages/loaders/graphql-file` / `code-file`.
+fn graphql_tools_ignore_negation(cwd: &Path, ex: &str) -> String {
+    let ex = ex.strip_prefix("./").unwrap_or(ex);
+    let v = if pointer_needs_glob_walk(ex) {
+        unixify_glob_token(ex)
+    } else {
+        path_to_unix_slashes(&resolve_path(cwd, ex))
+    };
+    format!("!{v}")
+}
+
+/// [`GlobWalkerBuilder::from_patterns`] on `cwd` with `[include, "!ignore1", …]` — toolkit `globby` shape.
+fn expand_document_globs_graphql_tools_style(
+    cwd: &Path,
+    pat_norm: &str,
+    ignore_negations: &[String],
+    doc_type: &str,
+) -> Result<Vec<PathBuf>> {
+    let pat_norm = pat_norm.strip_prefix("./").unwrap_or(pat_norm);
+    let include_variants: Vec<String> = match expand_brace_alternatives_in_last_segment(pat_norm) {
+        Some(alts) => alts.into_iter().map(|p| unixify_glob_token(&p)).collect(),
+        None => vec![unixify_glob_token(pat_norm)],
+    };
+
+    let mut merged = Vec::new();
+    for inc in include_variants {
+        let mut patterns: Vec<String> = Vec::with_capacity(1 + ignore_negations.len());
+        patterns.push(inc);
+        patterns.extend_from_slice(ignore_negations);
+
+        let pat_refs: Vec<&str> = patterns.iter().map(|s| s.as_str()).collect();
+        let walker = GlobWalkerBuilder::from_patterns(cwd, &pat_refs)
+            .follow_links(false)
+            .file_type(globwalk::FileType::FILE | globwalk::FileType::SYMLINK)
+            .build()
+            .with_context(|| {
+                format!(
+                    "failed to build {doc_type} glob walker (cwd={}, patterns={pat_refs:?})",
+                    cwd.display()
+                )
+            })?;
+
+        for entry in walker {
+            let entry = entry
+                .with_context(|| format!("{doc_type} glob walk error under {}", cwd.display()))?;
+            let path = normalize_glob_entry_path(cwd, entry.path());
+            if path.is_file() {
+                merged.push(path);
+            }
         }
     }
+    merged.sort();
+    merged.dedup();
+    Ok(merged)
 }
 
 fn pointer_might_be_inline_graphql(pointer: &str) -> bool {
@@ -407,6 +461,13 @@ async fn load_documents_for_pointers(
         }
     }
 
+    let ignore_negations: Vec<String> = exclude
+        .iter()
+        .map(|e| graphql_tools_ignore_negation(cwd, e.strip_prefix("./").unwrap_or(e)))
+        .collect();
+
+    let use_toolkit_glob_merge = !ignore_negations.is_empty();
+
     let mut files: Vec<PathBuf> = Vec::new();
     let mut inline_graphql: Vec<String> = Vec::new();
     for pat in include {
@@ -422,18 +483,54 @@ async fn load_documents_for_pointers(
         }
 
         if !pointer_needs_glob_walk(&pat_norm) {
-            let candidate = resolve_path(cwd, &pat_norm);
-            debug_event(
-                timing_enabled,
-                format!(
-                    "{doc_type} checking literal document pointer {}",
-                    candidate.display()
-                ),
-            );
-            if candidate.is_file()
-                && (is_graphql_document(&candidate) || is_code_document(&candidate))
-            {
-                files.push(candidate);
+            if use_toolkit_glob_merge {
+                debug_event(
+                    timing_enabled,
+                    format!(
+                        "{doc_type} literal document pointer `{pat_norm}` with {} toolkit ignore pattern(s)",
+                        ignore_negations.len()
+                    ),
+                );
+                let glob_started = Instant::now();
+                let before = files.len();
+                let mut matched_file = false;
+                for path in expand_document_globs_graphql_tools_style(
+                    cwd,
+                    &pat_norm,
+                    &ignore_negations,
+                    doc_type,
+                )? {
+                    if !is_graphql_document(&path) && !is_code_document(&path) {
+                        continue;
+                    }
+                    files.push(path);
+                    matched_file = true;
+                }
+                debug_timing(
+                    timing_enabled,
+                    format!(
+                        "{doc_type} literal `{pat_norm}` matched {} candidate file(s)",
+                        files.len().saturating_sub(before)
+                    ),
+                    glob_started,
+                );
+                if !matched_file && pointer_might_be_inline_graphql(&pat_norm) {
+                    inline_graphql.push(pat);
+                }
+            } else {
+                let candidate = resolve_path(cwd, &pat_norm);
+                debug_event(
+                    timing_enabled,
+                    format!(
+                        "{doc_type} checking literal document pointer {}",
+                        candidate.display()
+                    ),
+                );
+                if candidate.is_file()
+                    && (is_graphql_document(&candidate) || is_code_document(&candidate))
+                {
+                    files.push(candidate);
+                }
             }
             continue;
         }
@@ -442,28 +539,51 @@ async fn load_documents_for_pointers(
             timing_enabled,
             format!("{doc_type} preparing document glob `{pat_norm}`"),
         );
-        let globs = expand_glob_split_pointers(cwd, &pat_norm);
-        debug_event(
-            timing_enabled,
-            format!(
-                "{doc_type} starting document glob `{pat_norm}` → {:?}",
-                globs
-                    .iter()
-                    .map(|g| (g.root.display().to_string(), g.pattern.clone()))
-                    .collect::<Vec<_>>()
-            ),
-        );
         let glob_started = Instant::now();
         let before = files.len();
-
         let mut matched_file = false;
-        for path in expand_globwalk_matches(&globs, doc_type, false)? {
-            if !is_graphql_document(&path) && !is_code_document(&path) {
-                continue;
+
+        if use_toolkit_glob_merge {
+            debug_event(
+                timing_enabled,
+                format!(
+                    "{doc_type} document glob `{pat_norm}` merged with {} toolkit ignore pattern(s)",
+                    ignore_negations.len()
+                ),
+            );
+            for path in expand_document_globs_graphql_tools_style(
+                cwd,
+                &pat_norm,
+                &ignore_negations,
+                doc_type,
+            )? {
+                if !is_graphql_document(&path) && !is_code_document(&path) {
+                    continue;
+                }
+                files.push(path);
+                matched_file = true;
             }
-            files.push(path);
-            matched_file = true;
+        } else {
+            let globs = expand_glob_split_pointers(cwd, &pat_norm);
+            debug_event(
+                timing_enabled,
+                format!(
+                    "{doc_type} starting document glob `{pat_norm}` → {:?}",
+                    globs
+                        .iter()
+                        .map(|g| (g.root.display().to_string(), g.pattern.clone()))
+                        .collect::<Vec<_>>()
+                ),
+            );
+            for path in expand_globwalk_matches(&globs, doc_type, false)? {
+                if !is_graphql_document(&path) && !is_code_document(&path) {
+                    continue;
+                }
+                files.push(path);
+                matched_file = true;
+            }
         }
+
         debug_timing(
             timing_enabled,
             format!(
@@ -476,50 +596,6 @@ async fn load_documents_for_pointers(
         if !matched_file && pointer_might_be_inline_graphql(&pat_norm) {
             inline_graphql.push(pat);
         }
-    }
-
-    // Apply excludes (best-effort). Mirrors `load.ts` → `ignore` passed to `loadDocuments` from
-    // `graphql-codegen-cli` (concrete output paths + user `!` negations, which may be globs).
-    if !exclude.is_empty() {
-        let mut excluded: HashSet<PathBuf> = HashSet::new();
-        for ex in exclude {
-            let ex = ex.strip_prefix("./").unwrap_or(&ex).to_string();
-            if pointer_needs_glob_walk(&ex) {
-                let globs = expand_glob_split_pointers(cwd, &ex);
-                debug_event(
-                    timing_enabled,
-                    format!(
-                        "{doc_type} starting ignore glob `{ex}` → {:?}",
-                        globs
-                            .iter()
-                            .map(|g| (g.root.display().to_string(), g.pattern.clone()))
-                            .collect::<Vec<_>>()
-                    ),
-                );
-                let exclude_started = Instant::now();
-                let before = excluded.len();
-                for path in expand_globwalk_matches(&globs, "ignore", false)? {
-                    add_excluded_path(&mut excluded, path);
-                }
-                debug_timing(
-                    timing_enabled,
-                    format!(
-                        "{doc_type} ignore glob `{ex}` matched {} files",
-                        excluded.len().saturating_sub(before)
-                    ),
-                    exclude_started,
-                );
-            } else {
-                let candidate = cwd.join(&ex);
-                if candidate.is_file() {
-                    add_excluded_path(&mut excluded, candidate);
-                }
-            }
-        }
-        files.retain(|p| {
-            let key = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
-            !excluded.contains(&key) && !excluded.contains(p)
-        });
     }
 
     files.sort();
@@ -1486,6 +1562,29 @@ extend type User {
         let paths = expand_globwalk_matches(&globs, "test", true).unwrap();
         assert_eq!(paths.len(), 1);
         assert!(paths[0].ends_with("root.graphqls"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn document_glob_merged_negations_like_graphql_file_loader() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!("graphql_codegen_neg_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("keep.graphql"), "query K { x }").unwrap();
+        fs::write(dir.join("drop.query.graphql"), "query D { x }").unwrap();
+        fs::write(dir.join("keep2.graphql"), "query K2 { x }").unwrap();
+        let neg = super::graphql_tools_ignore_negation(&dir, "*.query.graphql");
+        let paths =
+            super::expand_document_globs_graphql_tools_style(&dir, "*.graphql", &[neg], "test")
+                .unwrap();
+        assert_eq!(paths.len(), 2);
+        let names: Vec<String> = paths
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.contains(&"keep.graphql".to_string()));
+        assert!(names.contains(&"keep2.graphql".to_string()));
         let _ = fs::remove_dir_all(&dir);
     }
 
