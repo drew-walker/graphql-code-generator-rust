@@ -1,11 +1,13 @@
 use std::path::Path;
 
 use crate::config::CodegenContext;
-use crate::load::load_documents;
+use crate::load::load_documents_with_timing;
 use crate::relay_optimize;
 use crate::transitional_plugins;
+use crate::utils::debugging::debug_timing;
 use plugin_helpers::types::{Config, FileOutput, OutputConfig};
 use plugin_helpers::utils::{merge_complex_plugin_output, merge_outputs};
+use std::time::Instant;
 
 #[derive(Debug)]
 pub struct ExecuteCodegenOutput {
@@ -16,7 +18,12 @@ pub struct ExecuteCodegenOutput {
 pub async fn execute_codegen(context: &mut CodegenContext) -> ExecuteCodegenOutput {
     let config = context.get_config();
     let mut result: Vec<FileOutput> = Vec::new();
+    let debug_timing_enabled = config.debug.unwrap_or(false)
+        || config.verbose.unwrap_or(false)
+        || context.flags.profile
+        || std::env::var_os("CODEGEN_TIMING").is_some();
 
+    let normalize_started = Instant::now();
     let generates = match normalize(&config) {
         Ok(g) => g,
         Err(error) => {
@@ -26,6 +33,11 @@ pub async fn execute_codegen(context: &mut CodegenContext) -> ExecuteCodegenOutp
             };
         }
     };
+    debug_timing(
+        debug_timing_enabled,
+        format!("normalize config ({} outputs)", generates.len()),
+        normalize_started,
+    );
 
     // `packages/graphql-codegen-cli/src/load.ts` `loadDocuments`: `ignore` is built from
     // `Object.keys(config.generates)` but **skips** entries where `path.extname(generatePath) === ''`
@@ -38,7 +50,11 @@ pub async fn execute_codegen(context: &mut CodegenContext) -> ExecuteCodegenOutp
         .collect();
 
     for (filename, output_config) in generates {
+        let output_started = Instant::now();
         if output_config.preset.is_some() {
+            if debug_timing_enabled {
+                eprintln!("[codegen:debug] skipping preset output {filename}");
+            }
             continue;
         }
 
@@ -47,7 +63,11 @@ pub async fn execute_codegen(context: &mut CodegenContext) -> ExecuteCodegenOutp
         schema_pointers.extend(config.schema.clone());
         schema_pointers.extend(output_config.schema.clone());
 
-        let schema_input = match context.load_schema(&schema_pointers).await {
+        let schema_started = Instant::now();
+        let schema_input = match context
+            .load_schema_with_timing(&schema_pointers, debug_timing_enabled)
+            .await
+        {
             Ok(s) => s,
             Err(e) => {
                 return ExecuteCodegenOutput {
@@ -56,6 +76,11 @@ pub async fn execute_codegen(context: &mut CodegenContext) -> ExecuteCodegenOutp
                 };
             }
         };
+        debug_timing(
+            debug_timing_enabled,
+            format!("load schema for {filename} ({schema_pointers:?})"),
+            schema_started,
+        );
 
         let mut document_pointers: Vec<String> = Vec::new();
         document_pointers.extend(config.documents.clone());
@@ -65,11 +90,13 @@ pub async fn execute_codegen(context: &mut CodegenContext) -> ExecuteCodegenOutp
         external_document_pointers.extend(config.external_documents.clone());
         external_document_pointers.extend(output_config.external_documents.clone());
 
-        let documents = match load_documents(
+        let documents_started = Instant::now();
+        let documents = match load_documents_with_timing(
             &context.cwd,
             &document_pointers,
             &external_document_pointers,
             &ignore_documents,
+            debug_timing_enabled,
         )
         .await
         {
@@ -81,15 +108,33 @@ pub async fn execute_codegen(context: &mut CodegenContext) -> ExecuteCodegenOutp
                 };
             }
         };
+        debug_timing(
+            debug_timing_enabled,
+            format!(
+                "load documents for {filename} ({} standard/external docs)",
+                documents.len()
+            ),
+            documents_started,
+        );
 
         if has_plugin(&output_config, "flow") || has_plugin(&output_config, "flow-resolvers") {
+            let flow_started = Instant::now();
+            let content = transitional_plugins::flow::combined_output(&schema_input.introspection);
+            debug_timing(
+                debug_timing_enabled,
+                format!("generate flow output for {filename}"),
+                flow_started,
+            );
             result.push(FileOutput {
                 filename: filename.to_string(),
-                content: Some(transitional_plugins::flow::combined_output(
-                    &schema_input.introspection,
-                )),
+                content: Some(content),
                 hooks: output_config.hooks,
             });
+            debug_timing(
+                debug_timing_enabled,
+                format!("complete output {filename}"),
+                output_started,
+            );
             continue;
         }
 
@@ -103,6 +148,7 @@ pub async fn execute_codegen(context: &mut CodegenContext) -> ExecuteCodegenOutp
                     )),
                 };
             };
+            let plugin_started = Instant::now();
             match plugin_name {
                 "add" => match transitional_plugins::add::plugin(plugin_spec.config()) {
                     Ok(out) => merge_complex_plugin_output(&mut merged, out),
@@ -209,8 +255,14 @@ pub async fn execute_codegen(context: &mut CodegenContext) -> ExecuteCodegenOutp
                     };
                 }
             }
+            debug_timing(
+                debug_timing_enabled,
+                format!("plugin {plugin_name} for {filename}"),
+                plugin_started,
+            );
         }
 
+        let merge_started = Instant::now();
         let mut content = merge_outputs(&merged);
         if has_plugin(&output_config, "typescript-resolvers") {
             content = transitional_plugins::typescript_resolvers::finalize_merged_content(
@@ -219,11 +271,21 @@ pub async fn execute_codegen(context: &mut CodegenContext) -> ExecuteCodegenOutp
                 &output_config.config,
             );
         }
+        debug_timing(
+            debug_timing_enabled,
+            format!("merge/finalize output {filename}"),
+            merge_started,
+        );
         result.push(FileOutput {
             filename: filename.to_string(),
             content: Some(content),
             hooks: output_config.hooks,
         });
+        debug_timing(
+            debug_timing_enabled,
+            format!("complete output {filename}"),
+            output_started,
+        );
     }
 
     ExecuteCodegenOutput {

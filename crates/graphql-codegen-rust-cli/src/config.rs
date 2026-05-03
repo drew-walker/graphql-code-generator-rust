@@ -394,9 +394,12 @@ impl CodegenContext {
         self.profiler_output = Some(default_profiler_output_name());
     }
 
-    /// Mirrors TS `CodegenContext.loadSchema` — returns a Rust-native schema bundle for plugins.
-    pub async fn load_schema(&self, pointers: &[String]) -> Result<SchemaGenerationInput> {
-        crate::load::load_schema(&self.cwd, pointers).await
+    pub async fn load_schema_with_timing(
+        &self,
+        pointers: &[String],
+        timing_enabled: bool,
+    ) -> Result<SchemaGenerationInput> {
+        crate::load::load_schema_with_timing(&self.cwd, pointers, timing_enabled).await
     }
 
     pub fn get_config(&mut self) -> Config {

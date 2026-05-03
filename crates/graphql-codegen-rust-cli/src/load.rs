@@ -9,44 +9,63 @@ use plugin_helpers::types::DocumentFile;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
+
+use crate::utils::debugging::{debug_timing, timing_enabled_from_env};
 
 /// Loads a GraphQL schema from string pointers (paths relative to `cwd`), matching the
 /// single-string-pointer case of TS `loadSchema` / `context.loadSchema`.
-pub async fn load_schema(cwd: &Path, pointers: &[String]) -> Result<SchemaGenerationInput> {
+pub async fn load_schema_with_timing(
+    cwd: &Path,
+    pointers: &[String],
+    timing_enabled: bool,
+) -> Result<SchemaGenerationInput> {
+    let timing_enabled = timing_enabled || timing_enabled_from_env();
+    let started = Instant::now();
     if pointers.is_empty() {
         anyhow::bail!("load_schema: empty schema pointers");
     }
 
-    if pointers.len() > 1 || pointers.iter().any(|p| pointer_needs_glob_walk(p)) {
-        return load_schema_graphql_pointers(cwd, pointers).await;
-    }
+    let result = if pointers.len() > 1 || pointers.iter().any(|p| pointer_needs_glob_walk(p)) {
+        load_schema_graphql_pointers(cwd, pointers, timing_enabled).await
+    } else {
+        let path = resolve_path(cwd, &pointers[0]);
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .unwrap_or_default();
 
-    let path = resolve_path(cwd, &pointers[0]);
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_ascii_lowercase())
-        .unwrap_or_default();
+        match ext.as_str() {
+            "json" => load_introspection_json(&path),
+            "graphql" | "gql" | "graphqls" => load_schema_graphql_file_loader(&path).await,
+            "js" | "cjs" | "mjs" => load_schema_js(&path).await,
+            _ => anyhow::bail!(
+                "Unsupported schema file for {} (expected .json, .graphql, or .js)",
+                path.display()
+            ),
+        }
+    };
 
-    match ext.as_str() {
-        "json" => load_introspection_json(&path),
-        "graphql" | "gql" | "graphqls" => load_schema_graphql_file_loader(&path).await,
-        "js" | "cjs" | "mjs" => load_schema_js(&path).await,
-        _ => anyhow::bail!(
-            "Unsupported schema file for {} (expected .json, .graphql, or .js)",
-            path.display()
-        ),
-    }
+    debug_timing(
+        timing_enabled,
+        format!("load_schema pointers={pointers:?}"),
+        started,
+    );
+    result
 }
 
 async fn load_schema_graphql_pointers(
     cwd: &Path,
     pointers: &[String],
+    timing_enabled: bool,
 ) -> Result<SchemaGenerationInput> {
     let mut files = Vec::new();
     for pointer in pointers {
         let pointer = pointer.strip_prefix("./").unwrap_or(pointer);
         if pointer_needs_glob_walk(pointer) {
+            let glob_started = Instant::now();
+            let before = files.len();
             let walker = GlobWalkerBuilder::from_patterns(cwd, &[pointer])
                 .follow_links(true)
                 .file_type(globwalk::FileType::FILE)
@@ -65,6 +84,14 @@ async fn load_schema_graphql_pointers(
                     files.push(path);
                 }
             }
+            debug_timing(
+                timing_enabled,
+                format!(
+                    "schema glob `{pointer}` matched {} files",
+                    files.len().saturating_sub(before)
+                ),
+                glob_started,
+            );
         } else {
             files.push(resolve_path(cwd, pointer));
         }
@@ -81,9 +108,15 @@ async fn load_schema_graphql_pointers(
 
     let mut sdl = String::new();
     for file in files {
+        let read_started = Instant::now();
         let text = tokio::fs::read_to_string(&file)
             .await
             .with_context(|| format!("failed to read schema {}", file.display()))?;
+        debug_timing(
+            timing_enabled,
+            format!("read schema file {}", file.display()),
+            read_started,
+        );
         if !sdl.is_empty() {
             sdl.push('\n');
         }
@@ -171,7 +204,10 @@ async fn load_documents_for_pointers(
     pointers: &[String],
     ignore: &[String],
     doc_type: &str,
+    timing_enabled: bool,
 ) -> Result<Vec<DocumentFile>> {
+    let timing_enabled = timing_enabled || timing_enabled_from_env();
+    let started = Instant::now();
     if pointers.is_empty() {
         return Ok(vec![]);
     }
@@ -192,6 +228,8 @@ async fn load_documents_for_pointers(
     for pat in include {
         let pat_norm = pat.strip_prefix("./").unwrap_or(&pat).to_string();
 
+        let glob_started = Instant::now();
+        let before = files.len();
         let walker = GlobWalkerBuilder::from_patterns(cwd, &[pat_norm.as_str()])
             .follow_links(true)
             .file_type(globwalk::FileType::FILE)
@@ -207,6 +245,14 @@ async fn load_documents_for_pointers(
             files.push(path);
             matched_file = true;
         }
+        debug_timing(
+            timing_enabled,
+            format!(
+                "{doc_type} document glob `{pat_norm}` matched {} candidate files",
+                files.len().saturating_sub(before)
+            ),
+            glob_started,
+        );
 
         if !matched_file && pointer_might_be_inline_graphql(&pat_norm) {
             inline_graphql.push(pat);
@@ -220,6 +266,8 @@ async fn load_documents_for_pointers(
         for ex in exclude {
             let ex = ex.strip_prefix("./").unwrap_or(&ex).to_string();
             if pointer_needs_glob_walk(&ex) {
+                let exclude_started = Instant::now();
+                let before = excluded.len();
                 let walker = GlobWalkerBuilder::from_patterns(cwd, &[ex.as_str()])
                     .follow_links(true)
                     .file_type(globwalk::FileType::FILE)
@@ -230,6 +278,14 @@ async fn load_documents_for_pointers(
                 for entry in walker.into_iter().flatten() {
                     add_excluded_path(&mut excluded, entry.path().to_path_buf());
                 }
+                debug_timing(
+                    timing_enabled,
+                    format!(
+                        "{doc_type} ignore glob `{ex}` matched {} files",
+                        excluded.len().saturating_sub(before)
+                    ),
+                    exclude_started,
+                );
             } else {
                 let candidate = cwd.join(&ex);
                 if candidate.is_file() {
@@ -248,23 +304,45 @@ async fn load_documents_for_pointers(
 
     let mut out: Vec<DocumentFile> = Vec::with_capacity(files.len() + inline_graphql.len());
     for path in files {
+        let read_started = Instant::now();
         let text = tokio::fs::read_to_string(&path)
             .await
             .with_context(|| format!("failed to read document {}", path.display()))?;
+        debug_timing(
+            timing_enabled,
+            format!("{doc_type} read document {}", path.display()),
+            read_started,
+        );
 
+        let collect_started = Instant::now();
         let sources = if is_graphql_document(&path) {
             vec![text]
         } else {
             pluck_graphql_sources(&text)
         };
+        debug_timing(
+            timing_enabled,
+            format!(
+                "{doc_type} collect GraphQL sources from {} ({} sources)",
+                path.display(),
+                sources.len()
+            ),
+            collect_started,
+        );
 
         for source in sources {
             // graphql-parser's AST lifetime is tied to the input buffer, so we promote the buffer
             // to `'static` for storage in `DocumentFile` (mirrors upstream's owned `DocumentNode`).
             let text: &'static str = Box::leak(source.into_boxed_str());
 
+            let parse_started = Instant::now();
             let document = graphql_parser::parse_query::<String>(text)
                 .with_context(|| format!("failed to parse GraphQL document {}", path.display()))?;
+            debug_timing(
+                timing_enabled,
+                format!("{doc_type} parse document {}", path.display()),
+                parse_started,
+            );
 
             out.push(DocumentFile {
                 location: path.to_string_lossy().to_string(),
@@ -276,8 +354,14 @@ async fn load_documents_for_pointers(
 
     for src in inline_graphql {
         let text: &'static str = Box::leak(src.into_boxed_str());
+        let parse_started = Instant::now();
         let document = graphql_parser::parse_query::<String>(text)
             .with_context(|| format!("failed to parse inline GraphQL document `{text}`"))?;
+        debug_timing(
+            timing_enabled,
+            format!("{doc_type} parse inline GraphQL document"),
+            parse_started,
+        );
         out.push(DocumentFile {
             location: "<inline>".to_string(),
             document,
@@ -285,21 +369,35 @@ async fn load_documents_for_pointers(
         });
     }
 
+    debug_timing(
+        timing_enabled,
+        format!(
+            "{doc_type} load_documents_for_pointers produced {} documents",
+            out.len()
+        ),
+        started,
+    );
     Ok(out)
 }
 
 /// Loads GraphQL documents from pointers (paths or globs), mirroring the TS `loadDocuments` call site.
 ///
 /// `ignore` is used to avoid loading generated outputs as inputs (upstream derives this from `generates`).
-pub async fn load_documents(
+pub async fn load_documents_with_timing(
     cwd: &Path,
     pointers: &[String],
     external_pointers: &[String],
     ignore: &[String],
+    timing_enabled: bool,
 ) -> Result<Vec<DocumentFile>> {
     let mut out = Vec::new();
-    out.extend(load_documents_for_pointers(cwd, pointers, ignore, "standard").await?);
-    out.extend(load_documents_for_pointers(cwd, external_pointers, ignore, "external").await?);
+    out.extend(
+        load_documents_for_pointers(cwd, pointers, ignore, "standard", timing_enabled).await?,
+    );
+    out.extend(
+        load_documents_for_pointers(cwd, external_pointers, ignore, "external", timing_enabled)
+            .await?,
+    );
     Ok(out)
 }
 

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use anyhow::Result;
 use base64::Engine as _;
@@ -8,7 +9,7 @@ use sha1::{Digest as _, Sha1};
 use crate::codegen::execute_codegen;
 use crate::config::{CodegenContext, ensure_context};
 use crate::hooks::lifecycle_hooks;
-use crate::utils::debugging::debug_log;
+use crate::utils::debugging::{debug_log_if, debug_timing};
 use crate::utils::file_system::{mkdirp, read_file, unlink_file, write_file};
 use crate::utils::logger::get_logger;
 use crate::utils::watcher::create_watcher;
@@ -81,6 +82,11 @@ pub async fn generate(input: CodegenContext, save_to_file: bool) -> Result<()> {
         recent_output_hash: &mut HashMap<String, String>,
         generation_result: Vec<FileOutput>,
     ) -> Result<Vec<FileOutput>> {
+        let debug_timing_enabled = config.debug.unwrap_or(false)
+            || config.verbose.unwrap_or(false)
+            || context.flags.profile
+            || std::env::var_os("CODEGEN_TIMING").is_some();
+
         if !save_to_file {
             return Ok(generation_result);
         }
@@ -117,6 +123,7 @@ pub async fn generate(input: CodegenContext, save_to_file: bool) -> Result<()> {
             .run(
                 || async {
                     for mut result in generation_result.clone() {
+                        let file_started = Instant::now();
                         let previous_hash = match recent_output_hash.get(&result.filename) {
                             Some(h) => Some(h.clone()),
                             None => hash_file(&resolve_path(&context.cwd, &result.filename)).await?,
@@ -128,6 +135,11 @@ pub async fn generate(input: CodegenContext, save_to_file: bool) -> Result<()> {
                         }
 
                         if !should_overwrite(config, &result.filename) && exists {
+                            debug_timing(
+                                debug_timing_enabled,
+                                format!("skip existing output {}", result.filename),
+                                file_started,
+                            );
                             continue;
                         }
 
@@ -138,10 +150,18 @@ pub async fn generate(input: CodegenContext, save_to_file: bool) -> Result<()> {
                         if let Some(ph) = &previous_hash
                             && current_hash == *ph
                         {
-                            debug_log(format!(
-                                "Skipping file ({}) writing due to indentical hash...",
-                                result.filename
-                            ));
+                            debug_log_if(
+                                debug_timing_enabled,
+                                format!(
+                                    "Skipping file ({}) writing due to indentical hash...",
+                                    result.filename
+                                ),
+                            );
+                            debug_timing(
+                                debug_timing_enabled,
+                                format!("skip unchanged output {}", result.filename),
+                                file_started,
+                            );
                             continue;
                         }
 
@@ -151,6 +171,11 @@ pub async fn generate(input: CodegenContext, save_to_file: bool) -> Result<()> {
                         }
 
                         if content.is_empty() {
+                            debug_timing(
+                                debug_timing_enabled,
+                                format!("skip empty output {}", result.filename),
+                                file_started,
+                            );
                             continue;
                         }
 
@@ -159,34 +184,65 @@ pub async fn generate(input: CodegenContext, save_to_file: bool) -> Result<()> {
                             mkdirp(basedir).await?;
                         }
 
+                        let one_file_hooks_started = Instant::now();
                         content = lifecycle_hooks(result.hooks.clone())
                             .before_one_file_write(absolute_path.to_string_lossy().as_ref(), content)
                             .await?;
                         content = lifecycle_hooks(config.hooks.clone())
                             .before_one_file_write(absolute_path.to_string_lossy().as_ref(), content)
                             .await?;
+                        debug_timing(
+                            debug_timing_enabled,
+                            format!("beforeOneFileWrite hooks for {}", result.filename),
+                            one_file_hooks_started,
+                        );
                         content = normalize_generated_content(content);
 
                         result.content = Some(content.clone());
                         if let Some(ph) = &previous_hash
                             && hash(&content) == *ph
                         {
-                            debug_log(format!(
-                                "Skipping file ({}) writing due to indentical hash after prettier...",
-                                result.filename
-                            ));
+                            debug_log_if(
+                                debug_timing_enabled,
+                                format!(
+                                    "Skipping file ({}) writing due to indentical hash after prettier...",
+                                    result.filename
+                                ),
+                            );
+                            debug_timing(
+                                debug_timing_enabled,
+                                format!("skip unchanged output after hooks {}", result.filename),
+                                file_started,
+                            );
                             continue;
                         }
 
+                        let write_started = Instant::now();
                         write_file(&absolute_path, result.content.as_deref().unwrap_or_default().as_bytes()).await?;
+                        debug_timing(
+                            debug_timing_enabled,
+                            format!("write output file {}", result.filename),
+                            write_started,
+                        );
                         recent_output_hash.insert(result.filename.clone(), current_hash);
 
+                        let after_hooks_started = Instant::now();
                         lifecycle_hooks(result.hooks.clone())
                             .after_one_file_write(&result.filename)
                             .await?;
                         lifecycle_hooks(config.hooks.clone())
                             .after_one_file_write(&result.filename)
                             .await?;
+                        debug_timing(
+                            debug_timing_enabled,
+                            format!("afterOneFileWrite hooks for {}", result.filename),
+                            after_hooks_started,
+                        );
+                        debug_timing(
+                            debug_timing_enabled,
+                            format!("write pipeline for {}", result.filename),
+                            file_started,
+                        );
                     }
                     Ok::<(), anyhow::Error>(())
                 },
@@ -300,6 +356,7 @@ async fn remove_stale_files(
     previously_generated_filenames: &mut Vec<String>,
     generation_result: &[FileOutput],
 ) {
+    let debug_enabled = debug_enabled_from_config(config);
     let filenames: Vec<String> = generation_result
         .iter()
         .map(|o| o.filename.clone())
@@ -314,8 +371,11 @@ async fn remove_stale_files(
         if should_overwrite(config, &filename) {
             let absolute = resolve_path(&context.cwd, &filename);
             match unlink_file(&absolute).await {
-                Ok(()) => debug_log(format!("Removed stale file: {}", filename)),
-                Err(err) => debug_log(format!("Cannot remove stale file: {}\n{}", filename, err)),
+                Ok(()) => debug_log_if(debug_enabled, format!("Removed stale file: {}", filename)),
+                Err(err) => debug_log_if(
+                    debug_enabled,
+                    format!("Cannot remove stale file: {}\n{}", filename, err),
+                ),
             }
         }
     }
@@ -327,7 +387,10 @@ fn should_overwrite(config: &Config, output_path: &str) -> bool {
     let global_value = config.overwrite.unwrap_or(true);
 
     let Some(output_config) = config.generates.get(output_path) else {
-        debug_log(format!("Couldn't find a config of {}", output_path));
+        debug_log_if(
+            debug_enabled_from_config(config),
+            format!("Couldn't find a config of {}", output_path),
+        );
         return global_value;
     };
 
@@ -339,6 +402,14 @@ fn should_overwrite(config: &Config, output_path: &str) -> bool {
     }
 
     global_value
+}
+
+fn debug_enabled_from_config(config: &Config) -> bool {
+    config.debug.unwrap_or(false)
+        || config.verbose.unwrap_or(false)
+        || std::env::var_os("CODEGEN_TIMING").is_some()
+        || std::env::var_os("DEBUG").is_some()
+        || std::env::var_os("VERBOSE").is_some()
 }
 
 fn is_configured_output(output: &OutputConfig) -> bool {
