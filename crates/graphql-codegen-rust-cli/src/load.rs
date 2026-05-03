@@ -32,7 +32,7 @@ pub async fn load_schema(cwd: &Path, pointers: &[String]) -> Result<SchemaGenera
 
     match ext.as_str() {
         "json" => load_introspection_json(&path),
-        "graphql" | "gql" => load_schema_graphql_file_loader(&path).await,
+        "graphql" | "gql" | "graphqls" => load_schema_graphql_file_loader(&path).await,
         "js" | "cjs" | "mjs" => load_schema_js(&path).await,
         _ => anyhow::bail!(
             "Unsupported schema file for {} (expected .json, .graphql, or .js)",
@@ -48,6 +48,36 @@ fn is_graphql_document(path: &Path) -> bool {
         .map(|e| e.to_ascii_lowercase())
         .unwrap_or_default();
     ext == "graphql" || ext == "gql"
+}
+
+fn is_code_document(path: &Path) -> bool {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    matches!(
+        ext.as_str(),
+        "js" | "jsx" | "ts" | "tsx" | "mts" | "cts" | "mjs" | "cjs"
+    )
+}
+
+fn pluck_graphql_sources(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(marker_start) = rest.find("/* GraphQL */") {
+        let after_marker = &rest[marker_start + "/* GraphQL */".len()..];
+        let Some(tick_start) = after_marker.find('`') else {
+            break;
+        };
+        let after_tick = &after_marker[tick_start + 1..];
+        let Some(tick_end) = after_tick.find('`') else {
+            break;
+        };
+        out.push(after_tick[..tick_end].to_string());
+        rest = &after_tick[tick_end + 1..];
+    }
+    out
 }
 
 /// When a `documents` entry is a raw GraphQL string (as in `graphql-code-generator`
@@ -120,7 +150,7 @@ async fn load_documents_for_pointers(
         let mut matched_file = false;
         for entry in walker.into_iter().flatten() {
             let path = entry.path().to_path_buf();
-            if !is_graphql_document(&path) {
+            if !is_graphql_document(&path) && !is_code_document(&path) {
                 continue;
             }
             files.push(path);
@@ -171,18 +201,26 @@ async fn load_documents_for_pointers(
             .await
             .with_context(|| format!("failed to read document {}", path.display()))?;
 
-        // graphql-parser's AST lifetime is tied to the input buffer, so we promote the buffer to
-        // `'static` for storage in `DocumentFile` (mirrors upstream's owned `DocumentNode` behavior).
-        let text: &'static str = Box::leak(text.into_boxed_str());
+        let sources = if is_graphql_document(&path) {
+            vec![text]
+        } else {
+            pluck_graphql_sources(&text)
+        };
 
-        let document = graphql_parser::parse_query::<String>(text)
-            .with_context(|| format!("failed to parse GraphQL document {}", path.display()))?;
+        for source in sources {
+            // graphql-parser's AST lifetime is tied to the input buffer, so we promote the buffer
+            // to `'static` for storage in `DocumentFile` (mirrors upstream's owned `DocumentNode`).
+            let text: &'static str = Box::leak(source.into_boxed_str());
 
-        out.push(DocumentFile {
-            location: path.to_string_lossy().to_string(),
-            document,
-            r#type: Some(doc_type.to_string()),
-        });
+            let document = graphql_parser::parse_query::<String>(text)
+                .with_context(|| format!("failed to parse GraphQL document {}", path.display()))?;
+
+            out.push(DocumentFile {
+                location: path.to_string_lossy().to_string(),
+                document,
+                r#type: Some(doc_type.to_string()),
+            });
+        }
     }
 
     for src in inline_graphql {

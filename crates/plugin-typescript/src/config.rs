@@ -33,6 +33,8 @@ pub struct TypeScriptPluginConfig {
     pub wrap_field_definitions: Option<bool>,
     #[serde(default)]
     pub wrap_entire_field_definitions: Option<bool>,
+    #[serde(default)]
+    pub skip_typename: Option<bool>,
 }
 
 impl TypeScriptPluginConfig {
@@ -55,6 +57,7 @@ pub struct TypeScriptPluginParsedConfig {
     pub enums_as_types: bool,
     pub wrap_field_definitions: bool,
     pub wrap_entire_field_definitions: bool,
+    pub skip_typename: bool,
 }
 
 impl TypeScriptPluginParsedConfig {
@@ -79,6 +82,7 @@ impl TypeScriptPluginParsedConfig {
                 raw.wrap_entire_field_definitions.as_ref(),
                 false,
             ),
+            skip_typename: get_config_value(raw.skip_typename.as_ref(), false),
         }
     }
 }

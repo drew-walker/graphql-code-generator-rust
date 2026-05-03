@@ -27,6 +27,18 @@ pub(crate) fn selection_set_object_ts(
         for t in possible {
             variants.push(selection_set_object_ts(v, &t, selection_set, fragments)?);
         }
+        if v.config.merge_fragment_types {
+            let mut unique = Vec::new();
+            for variant in variants {
+                if !unique.contains(&variant) {
+                    unique.push(variant);
+                }
+            }
+            if unique.len() > 1 && unique.iter().any(|variant| !is_empty_object(variant)) {
+                unique.retain(|variant| !is_empty_object(variant));
+            }
+            variants = unique;
+        }
         return Ok(variants.join(" | "));
     }
 
@@ -37,12 +49,14 @@ pub(crate) fn selection_set_object_ts(
     let mut seen_primitive: HashSet<String> = HashSet::new();
     let mut seen_link: HashSet<String> = HashSet::new();
 
-    if v.config.immutable_types {
-        primitive.push(format!("readonly __typename?: '{parent_type}'"));
-    } else {
-        primitive.push(format!("__typename?: '{parent_type}'"));
+    if !v.config.skip_typename {
+        if v.config.immutable_types {
+            primitive.push(format!("readonly __typename?: '{parent_type}'"));
+        } else {
+            primitive.push(format!("__typename?: '{parent_type}'"));
+        }
+        seen_primitive.insert("__typename".to_string());
     }
-    seen_primitive.insert("__typename".to_string());
 
     collect_selections_into(
         v,
@@ -92,6 +106,10 @@ pub(crate) fn selection_set_object_ts(
         ));
     }
     Ok(format!("{{ {} }}", selections.join(", ")))
+}
+
+fn is_empty_object(s: &str) -> bool {
+    s.chars().filter(|c| !c.is_whitespace()).collect::<String>() == "{}"
 }
 
 pub(crate) fn collect_selections_into(

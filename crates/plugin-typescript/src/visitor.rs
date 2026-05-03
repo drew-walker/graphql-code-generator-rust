@@ -316,13 +316,15 @@ impl<'a> TsVisitor<'a> {
             }
             out.push_str(" & {\n");
         }
-        if self.config.immutable_types {
-            out.push_str("  readonly __typename?: '");
-        } else {
-            out.push_str("  __typename?: '");
+        if !self.config.skip_typename {
+            if self.config.immutable_types {
+                out.push_str("  readonly __typename?: '");
+            } else {
+                out.push_str("  __typename?: '");
+            }
+            out.push_str(name);
+            out.push_str("';\n");
         }
-        out.push_str(name);
-        out.push_str("';\n");
 
         let mut arg_types: Vec<String> = Vec::new();
         if let Some(fields) = fields {

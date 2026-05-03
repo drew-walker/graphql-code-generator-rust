@@ -148,6 +148,9 @@ pub struct TypeScriptDocumentsVisitor<'a> {
     /// Borrowed from `schema.introspection` — do not clone the whole introspection `types` array
     /// per run (that was accidentally ~O(schema JSON size) per output).
     types_by_name: HashMap<String, &'a Value>,
+    query_type: String,
+    mutation_type: Option<String>,
+    subscription_type: Option<String>,
 }
 
 pub(crate) struct CollectSelectionsCtx<'a> {
@@ -176,6 +179,10 @@ impl<'a> TypeScriptDocumentsVisitor<'a> {
             config,
             documents,
             types_by_name,
+            query_type: root_type_name(&schema.introspection, "queryType")
+                .unwrap_or_else(|| "Query".to_string()),
+            mutation_type: root_type_name(&schema.introspection, "mutationType"),
+            subscription_type: root_type_name(&schema.introspection, "subscriptionType"),
         }
     }
 
@@ -188,13 +195,14 @@ impl<'a> TypeScriptDocumentsVisitor<'a> {
     }
 
     pub fn generate(&self) -> Result<ComplexPluginOutput> {
-        let merged = self.merge_documents();
-        let fragments = collect_fragments(&merged);
+        let all_documents = self.merge_documents(false);
+        let documents_to_visit = self.merge_documents(true);
+        let fragments = collect_fragments(&all_documents);
 
         let mut content_parts: Vec<String> = Vec::new();
 
         // Emit in definition order (closer to upstream visit-driven behavior).
-        for def in &merged.definitions {
+        for def in &documents_to_visit.definitions {
             match def {
                 Definition::Fragment(frag) => {
                     let name = frag.name.clone();
@@ -229,16 +237,25 @@ impl<'a> TypeScriptDocumentsVisitor<'a> {
                     }
                 }
                 Definition::Operation(op) => {
-                    let (op_name, op_kind, selection_set) = match op {
-                        OperationDefinition::Query(q) => {
-                            (q.name.clone(), "Query", &q.selection_set)
-                        }
-                        OperationDefinition::Mutation(m) => {
-                            (m.name.clone(), "Mutation", &m.selection_set)
-                        }
-                        OperationDefinition::Subscription(s) => {
-                            (s.name.clone(), "Subscription", &s.selection_set)
-                        }
+                    let (op_name, op_kind, parent_type, selection_set) = match op {
+                        OperationDefinition::Query(q) => (
+                            q.name.clone(),
+                            "Query",
+                            self.query_type.as_str(),
+                            &q.selection_set,
+                        ),
+                        OperationDefinition::Mutation(m) => (
+                            m.name.clone(),
+                            "Mutation",
+                            self.mutation_type.as_deref().unwrap_or("Mutation"),
+                            &m.selection_set,
+                        ),
+                        OperationDefinition::Subscription(s) => (
+                            s.name.clone(),
+                            "Subscription",
+                            self.subscription_type.as_deref().unwrap_or("Subscription"),
+                            &s.selection_set,
+                        ),
                         OperationDefinition::SelectionSet(_) => continue,
                     };
 
@@ -255,7 +272,7 @@ impl<'a> TypeScriptDocumentsVisitor<'a> {
                     ));
 
                     let result_ts =
-                        self.selection_set_object_ts(op_kind, selection_set, &fragments)?;
+                        self.selection_set_object_ts(parent_type, selection_set, &fragments)?;
                     content_parts.push(format!(
                         "{}{result_name} = {result_ts};",
                         self.export_type_leading()
@@ -288,9 +305,16 @@ impl<'a> TypeScriptDocumentsVisitor<'a> {
         vec![]
     }
 
-    fn merge_documents(&self) -> Document<'static, String> {
+    fn merge_documents(&self, standard_only: bool) -> Document<'static, String> {
         let mut defs: Vec<Definition<'static, String>> = Vec::new();
         for d in self.documents {
+            if standard_only
+                && d.r#type
+                    .as_deref()
+                    .is_some_and(|doc_type| doc_type != "standard")
+            {
+                continue;
+            }
             for def in &d.document.definitions {
                 defs.push(def.clone());
             }
@@ -418,4 +442,12 @@ fn collect_fragments(
         }
     }
     out
+}
+
+fn root_type_name(introspection: &Value, key: &str) -> Option<String> {
+    introspection
+        .get(key)?
+        .get("name")?
+        .as_str()
+        .map(ToOwned::to_owned)
 }
