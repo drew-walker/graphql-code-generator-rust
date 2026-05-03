@@ -3,11 +3,18 @@
 //! or inline GraphQL strings (same as upstream `loadDocuments` + `@graphql-tools/load`).
 
 use anyhow::{Context as _, Result};
+use apollo_compiler::Schema as ApolloSchema;
 use globwalk::GlobWalkerBuilder;
+use graphql_parser::schema::{
+    Definition as SchemaDefinitionAst, Document as SchemaDocument, EnumType, EnumTypeExtension,
+    Field, InputObjectType, InputObjectTypeExtension, InputValue, InterfaceType,
+    InterfaceTypeExtension, ObjectType, ObjectTypeExtension, Type as SchemaType, TypeDefinition,
+    TypeExtension, UnionType, UnionTypeExtension, Value as SchemaValue, parse_schema,
+};
 use plugin_helpers::schema_input::SchemaGenerationInput;
 use plugin_helpers::types::DocumentFile;
-use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use serde_json::{Value, json};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -141,7 +148,7 @@ async fn load_schema_graphql_pointers(
         }
         sdl.push_str(&text);
     }
-    load_schema_graphql_sdl(&sdl, cwd, timing_enabled).await
+    load_schema_graphql_sdl(&sdl, timing_enabled)
 }
 
 fn is_graphql_document(path: &Path) -> bool {
@@ -592,21 +599,27 @@ async fn load_schema_js(path: &Path, timing_enabled: bool) -> Result<SchemaGener
         .canonicalize()
         .with_context(|| format!("schema file not found: {}", path.display()))?;
 
+    let cwd = abs
+        .parent()
+        .context("schema path has no parent directory")?;
     debug_event(
         timing_enabled,
         format!("starting JS schema loader node process {}", abs.display()),
     );
     let output = tokio::process::Command::new("node")
-        .current_dir(
-            abs.parent()
-                .context("schema path has no parent directory")?,
-        )
+        .current_dir(cwd)
         .env("CODEGEN_SCHEMA_PATH", abs.as_os_str())
         .arg("-e")
         .arg(SCHEMA_LOAD_SCRIPT_CJS)
         .output()
         .await
-        .context("failed to spawn `node` for schema load — is Node installed?")?;
+        .with_context(|| {
+            format!(
+                "failed to spawn `node` for JS schema load in {}. PATH={}",
+                cwd.display(),
+                std::env::var("PATH").unwrap_or_else(|_| "<unset>".to_string())
+            )
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -647,8 +660,8 @@ async fn load_schema_js(path: &Path, timing_enabled: bool) -> Result<SchemaGener
 /// Upstream reference:
 /// - `packages/graphql-codegen-cli/src/load.ts` → `loadSchema()` → loaders include `new GraphQLFileLoader()`.
 ///
-/// Implementation note: upstream uses `@graphql-tools/load` + `GraphQLFileLoader`. We shell out to
-/// Node with `graphql`'s `buildSchema` for now.
+/// Implementation note: upstream uses `@graphql-tools/load` + `GraphQLFileLoader`; the Rust port
+/// builds the introspection shape natively from the SDL AST.
 async fn load_schema_graphql_file_loader(
     path: &Path,
     timing_enabled: bool,
@@ -663,56 +676,507 @@ async fn load_schema_graphql_file_loader(
     let sdl = tokio::fs::read_to_string(&abs)
         .await
         .with_context(|| format!("failed to read schema {}", abs.display()))?;
-    load_schema_graphql_sdl(
-        &sdl,
-        abs.parent()
-            .context("schema path has no parent directory")?,
-        timing_enabled,
-    )
-    .await
+    load_schema_graphql_sdl(&sdl, timing_enabled)
 }
 
-async fn load_schema_graphql_sdl(
-    sdl: &str,
-    cwd: &Path,
-    timing_enabled: bool,
-) -> Result<SchemaGenerationInput> {
+fn load_schema_graphql_sdl(sdl: &str, timing_enabled: bool) -> Result<SchemaGenerationInput> {
     debug_event(
         timing_enabled,
         format!(
-            "starting SDL schema loader node process in {} ({} bytes)",
-            cwd.display(),
+            "starting apollo-compiler SDL schema parse ({} bytes)",
             sdl.len()
         ),
     );
-    let output = tokio::process::Command::new("node")
-        .current_dir(cwd)
-        .env("CODEGEN_SCHEMA_SDL", sdl)
-        .arg("-e")
-        .arg(GRAPHQL_FILE_LOADER_SCRIPT_CJS)
-        .output()
-        .await
-        .context("failed to spawn `node` for SDL schema load — is Node installed?")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("failed to load SDL schema: {}", stderr.trim());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    debug_event(timing_enabled, "starting SDL schema loader JSON parse");
-    let parsed: Value =
-        serde_json::from_str(stdout.trim()).context("failed to parse SDL schema loader JSON")?;
-
-    let introspection = parsed
-        .get("__schema")
-        .cloned()
-        .context("SDL schema loader JSON missing `__schema`")?;
-
+    let normalized_sdl = normalize_orphan_schema_extensions(&strip_schema_extensions(sdl));
+    let apollo_schema = ApolloSchema::parse(&normalized_sdl, "schema.graphql")
+        .map_err(|errors| anyhow::anyhow!("failed to parse SDL schema:\n{errors}"))?;
+    let merged_sdl = apollo_schema.serialize().to_string();
+    let document = parse_schema::<String>(&merged_sdl)
+        .context("failed to parse SDL schema")?
+        .into_static();
     Ok(SchemaGenerationInput {
-        introspection,
+        introspection: schema_document_to_introspection(&document),
         enum_internal_values: HashMap::new(),
     })
+}
+
+#[derive(Debug, Clone, Default)]
+struct SdlType {
+    kind: &'static str,
+    description: Option<String>,
+    fields: Vec<Field<'static, String>>,
+    input_fields: Vec<InputValue<'static, String>>,
+    interfaces: Vec<String>,
+    enum_values: Vec<graphql_parser::schema::EnumValue<'static, String>>,
+    possible_types: Vec<String>,
+}
+
+fn strip_schema_extensions(sdl: &str) -> String {
+    let mut out = String::new();
+    let mut skipping_extend_schema = false;
+    for line in sdl.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("extend schema") {
+            skipping_extend_schema = true;
+            continue;
+        }
+        if skipping_extend_schema {
+            if trimmed.is_empty() || trimmed.starts_with('@') {
+                continue;
+            }
+            skipping_extend_schema = false;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+fn normalize_orphan_schema_extensions(sdl: &str) -> String {
+    let mut defined = HashSet::new();
+    for line in sdl.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("extend ") {
+            continue;
+        }
+        if let Some(name) = type_name_from_definition_line(trimmed) {
+            defined.insert(name.to_string());
+        }
+    }
+
+    let mut out = String::new();
+    for line in sdl.lines() {
+        let trimmed = line.trim_start();
+        let leading = &line[..line.len() - trimmed.len()];
+        if let Some(rest) = trimmed.strip_prefix("extend ")
+            && let Some(name) = type_name_from_definition_line(rest)
+            && !defined.contains(name)
+        {
+            defined.insert(name.to_string());
+            out.push_str(leading);
+            out.push_str(rest);
+            out.push('\n');
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+fn type_name_from_definition_line(line: &str) -> Option<&str> {
+    for keyword in ["type", "interface", "input", "enum", "union", "scalar"] {
+        if let Some(rest) = line.strip_prefix(keyword) {
+            let rest = rest.trim_start();
+            let name = rest
+                .split(|c: char| c.is_whitespace() || matches!(c, '@' | '=' | '{'))
+                .next()
+                .filter(|name| !name.is_empty())?;
+            return Some(name);
+        }
+    }
+    None
+}
+
+fn schema_document_to_introspection(document: &SchemaDocument<'static, String>) -> Value {
+    let mut types: BTreeMap<String, SdlType> = BTreeMap::new();
+    add_builtin_scalars(&mut types);
+
+    let mut query_type: Option<String> = None;
+    let mut mutation_type: Option<String> = None;
+    let mut subscription_type: Option<String> = None;
+
+    for definition in &document.definitions {
+        match definition {
+            SchemaDefinitionAst::SchemaDefinition(schema) => {
+                query_type = schema.query.clone();
+                mutation_type = schema.mutation.clone();
+                subscription_type = schema.subscription.clone();
+            }
+            SchemaDefinitionAst::TypeDefinition(definition) => {
+                add_type_definition(&mut types, definition);
+            }
+            SchemaDefinitionAst::TypeExtension(extension) => {
+                add_type_extension(&mut types, extension);
+            }
+            SchemaDefinitionAst::DirectiveDefinition(_) => {}
+        }
+    }
+
+    if query_type.is_none() && types.contains_key("Query") {
+        query_type = Some("Query".to_string());
+    }
+    if mutation_type.is_none() && types.contains_key("Mutation") {
+        mutation_type = Some("Mutation".to_string());
+    }
+    if subscription_type.is_none() && types.contains_key("Subscription") {
+        subscription_type = Some("Subscription".to_string());
+    }
+
+    add_interface_possible_types(&mut types);
+
+    let type_values = types
+        .iter()
+        .map(|(name, ty)| sdl_type_to_introspection(name, ty, &types))
+        .collect::<Vec<_>>();
+
+    json!({
+        "queryType": query_type.map(|name| json!({ "name": name })).unwrap_or(Value::Null),
+        "mutationType": mutation_type.map(|name| json!({ "name": name })).unwrap_or(Value::Null),
+        "subscriptionType": subscription_type.map(|name| json!({ "name": name })).unwrap_or(Value::Null),
+        "types": type_values,
+        "directives": [],
+    })
+}
+
+fn add_builtin_scalars(types: &mut BTreeMap<String, SdlType>) {
+    for name in ["String", "Boolean", "Int", "Float", "ID"] {
+        types.insert(
+            name.to_string(),
+            SdlType {
+                kind: "SCALAR",
+                ..Default::default()
+            },
+        );
+    }
+}
+
+fn add_type_definition(
+    types: &mut BTreeMap<String, SdlType>,
+    definition: &TypeDefinition<'static, String>,
+) {
+    match definition {
+        TypeDefinition::Scalar(scalar) => {
+            types.insert(
+                scalar.name.clone(),
+                SdlType {
+                    kind: "SCALAR",
+                    description: scalar.description.clone(),
+                    ..Default::default()
+                },
+            );
+        }
+        TypeDefinition::Object(object) => set_object_type(types, object),
+        TypeDefinition::Interface(interface) => set_interface_type(types, interface),
+        TypeDefinition::Union(union) => set_union_type(types, union),
+        TypeDefinition::Enum(enum_type) => set_enum_type(types, enum_type),
+        TypeDefinition::InputObject(input) => set_input_type(types, input),
+    }
+}
+
+fn add_type_extension(
+    types: &mut BTreeMap<String, SdlType>,
+    extension: &TypeExtension<'static, String>,
+) {
+    match extension {
+        TypeExtension::Object(object) => extend_object_type(types, object),
+        TypeExtension::Interface(interface) => extend_interface_type(types, interface),
+        TypeExtension::Union(union) => extend_union_type(types, union),
+        TypeExtension::Enum(enum_type) => extend_enum_type(types, enum_type),
+        TypeExtension::InputObject(input) => extend_input_type(types, input),
+        TypeExtension::Scalar(scalar) => {
+            types.entry(scalar.name.clone()).or_insert_with(|| SdlType {
+                kind: "SCALAR",
+                ..Default::default()
+            });
+        }
+    }
+}
+
+fn set_object_type(types: &mut BTreeMap<String, SdlType>, object: &ObjectType<'static, String>) {
+    types.insert(
+        object.name.clone(),
+        SdlType {
+            kind: "OBJECT",
+            description: object.description.clone(),
+            fields: object.fields.clone(),
+            interfaces: object.implements_interfaces.clone(),
+            ..Default::default()
+        },
+    );
+}
+
+fn extend_object_type(
+    types: &mut BTreeMap<String, SdlType>,
+    object: &ObjectTypeExtension<'static, String>,
+) {
+    let entry = types.entry(object.name.clone()).or_insert_with(|| SdlType {
+        kind: "OBJECT",
+        ..Default::default()
+    });
+    entry.fields.extend(object.fields.clone());
+    merge_names(&mut entry.interfaces, &object.implements_interfaces);
+}
+
+fn set_interface_type(
+    types: &mut BTreeMap<String, SdlType>,
+    interface: &InterfaceType<'static, String>,
+) {
+    types.insert(
+        interface.name.clone(),
+        SdlType {
+            kind: "INTERFACE",
+            description: interface.description.clone(),
+            fields: interface.fields.clone(),
+            interfaces: interface.implements_interfaces.clone(),
+            ..Default::default()
+        },
+    );
+}
+
+fn extend_interface_type(
+    types: &mut BTreeMap<String, SdlType>,
+    interface: &InterfaceTypeExtension<'static, String>,
+) {
+    let entry = types
+        .entry(interface.name.clone())
+        .or_insert_with(|| SdlType {
+            kind: "INTERFACE",
+            ..Default::default()
+        });
+    entry.fields.extend(interface.fields.clone());
+    merge_names(&mut entry.interfaces, &interface.implements_interfaces);
+}
+
+fn set_union_type(types: &mut BTreeMap<String, SdlType>, union: &UnionType<'static, String>) {
+    types.insert(
+        union.name.clone(),
+        SdlType {
+            kind: "UNION",
+            description: union.description.clone(),
+            possible_types: union.types.clone(),
+            ..Default::default()
+        },
+    );
+}
+
+fn extend_union_type(
+    types: &mut BTreeMap<String, SdlType>,
+    union: &UnionTypeExtension<'static, String>,
+) {
+    let entry = types.entry(union.name.clone()).or_insert_with(|| SdlType {
+        kind: "UNION",
+        ..Default::default()
+    });
+    merge_names(&mut entry.possible_types, &union.types);
+}
+
+fn set_enum_type(types: &mut BTreeMap<String, SdlType>, enum_type: &EnumType<'static, String>) {
+    types.insert(
+        enum_type.name.clone(),
+        SdlType {
+            kind: "ENUM",
+            description: enum_type.description.clone(),
+            enum_values: enum_type.values.clone(),
+            ..Default::default()
+        },
+    );
+}
+
+fn extend_enum_type(
+    types: &mut BTreeMap<String, SdlType>,
+    enum_type: &EnumTypeExtension<'static, String>,
+) {
+    let entry = types
+        .entry(enum_type.name.clone())
+        .or_insert_with(|| SdlType {
+            kind: "ENUM",
+            ..Default::default()
+        });
+    entry.enum_values.extend(enum_type.values.clone());
+}
+
+fn set_input_type(types: &mut BTreeMap<String, SdlType>, input: &InputObjectType<'static, String>) {
+    types.insert(
+        input.name.clone(),
+        SdlType {
+            kind: "INPUT_OBJECT",
+            description: input.description.clone(),
+            input_fields: input.fields.clone(),
+            ..Default::default()
+        },
+    );
+}
+
+fn extend_input_type(
+    types: &mut BTreeMap<String, SdlType>,
+    input: &InputObjectTypeExtension<'static, String>,
+) {
+    let entry = types.entry(input.name.clone()).or_insert_with(|| SdlType {
+        kind: "INPUT_OBJECT",
+        ..Default::default()
+    });
+    entry.input_fields.extend(input.fields.clone());
+}
+
+fn add_interface_possible_types(types: &mut BTreeMap<String, SdlType>) {
+    let implementors = types
+        .iter()
+        .filter(|(_, ty)| ty.kind == "OBJECT")
+        .flat_map(|(name, ty)| {
+            ty.interfaces
+                .iter()
+                .map(move |interface| (interface.clone(), name.clone()))
+        })
+        .collect::<Vec<_>>();
+
+    for (interface, object_name) in implementors {
+        if let Some(ty) = types.get_mut(&interface) {
+            merge_names(&mut ty.possible_types, &[object_name]);
+        }
+    }
+}
+
+fn sdl_type_to_introspection(name: &str, ty: &SdlType, types: &BTreeMap<String, SdlType>) -> Value {
+    json!({
+        "kind": ty.kind,
+        "name": name,
+        "description": ty.description,
+        "fields": if matches!(ty.kind, "OBJECT" | "INTERFACE") {
+            Value::Array(ty.fields.iter().map(|field| field_to_introspection(field, types)).collect())
+        } else {
+            Value::Null
+        },
+        "inputFields": if ty.kind == "INPUT_OBJECT" {
+            Value::Array(ty.input_fields.iter().map(|field| input_value_to_introspection(field, types)).collect())
+        } else {
+            Value::Null
+        },
+        "interfaces": if matches!(ty.kind, "OBJECT" | "INTERFACE") {
+            Value::Array(ty.interfaces.iter().map(|name| named_type_ref(name, types)).collect())
+        } else {
+            Value::Null
+        },
+        "enumValues": if ty.kind == "ENUM" {
+            Value::Array(ty.enum_values.iter().map(enum_value_to_introspection).collect())
+        } else {
+            Value::Null
+        },
+        "possibleTypes": if matches!(ty.kind, "INTERFACE" | "UNION") {
+            Value::Array(ty.possible_types.iter().map(|name| named_type_ref(name, types)).collect())
+        } else {
+            Value::Null
+        },
+    })
+}
+
+fn field_to_introspection(
+    field: &Field<'static, String>,
+    types: &BTreeMap<String, SdlType>,
+) -> Value {
+    json!({
+        "name": field.name,
+        "description": field.description,
+        "args": field.arguments.iter().map(|arg| input_value_to_introspection(arg, types)).collect::<Vec<_>>(),
+        "type": schema_type_ref(&field.field_type, types),
+        "isDeprecated": deprecated_reason(&field.directives).is_some(),
+        "deprecationReason": deprecated_reason(&field.directives),
+    })
+}
+
+fn input_value_to_introspection(
+    value: &InputValue<'static, String>,
+    types: &BTreeMap<String, SdlType>,
+) -> Value {
+    json!({
+        "name": value.name,
+        "description": value.description,
+        "type": schema_type_ref(&value.value_type, types),
+        "defaultValue": value.default_value.as_ref().map(schema_value_to_string),
+        "isDeprecated": deprecated_reason(&value.directives).is_some(),
+        "deprecationReason": deprecated_reason(&value.directives),
+    })
+}
+
+fn enum_value_to_introspection(
+    value: &graphql_parser::schema::EnumValue<'static, String>,
+) -> Value {
+    json!({
+        "name": value.name,
+        "description": value.description,
+        "isDeprecated": deprecated_reason(&value.directives).is_some(),
+        "deprecationReason": deprecated_reason(&value.directives),
+    })
+}
+
+fn schema_type_ref(t: &SchemaType<'static, String>, types: &BTreeMap<String, SdlType>) -> Value {
+    match t {
+        SchemaType::NamedType(name) => named_type_ref(name, types),
+        SchemaType::ListType(inner) => json!({
+            "kind": "LIST",
+            "name": Value::Null,
+            "ofType": schema_type_ref(inner, types),
+        }),
+        SchemaType::NonNullType(inner) => json!({
+            "kind": "NON_NULL",
+            "name": Value::Null,
+            "ofType": schema_type_ref(inner, types),
+        }),
+    }
+}
+
+fn named_type_ref(name: &str, types: &BTreeMap<String, SdlType>) -> Value {
+    json!({
+        "kind": types.get(name).map(|ty| ty.kind).unwrap_or("SCALAR"),
+        "name": name,
+        "ofType": Value::Null,
+    })
+}
+
+fn deprecated_reason(
+    directives: &[graphql_parser::schema::Directive<'static, String>],
+) -> Option<String> {
+    directives
+        .iter()
+        .find(|directive| directive.name == "deprecated")
+        .map(|directive| {
+            directive
+                .arguments
+                .iter()
+                .find_map(|(name, value)| {
+                    (name == "reason").then(|| match value {
+                        SchemaValue::String(reason) => reason.clone(),
+                        _ => schema_value_to_string(value),
+                    })
+                })
+                .unwrap_or_else(|| "No longer supported".to_string())
+        })
+}
+
+fn schema_value_to_string(value: &SchemaValue<'static, String>) -> String {
+    match value {
+        SchemaValue::Variable(name) => format!("${name}"),
+        SchemaValue::Int(value) => value.as_i64().unwrap_or_default().to_string(),
+        SchemaValue::Float(value) => value.to_string(),
+        SchemaValue::String(value) => format!("\"{}\"", value.replace('"', "\\\"")),
+        SchemaValue::Boolean(value) => value.to_string(),
+        SchemaValue::Null => "null".to_string(),
+        SchemaValue::Enum(value) => value.clone(),
+        SchemaValue::List(values) => format!(
+            "[{}]",
+            values
+                .iter()
+                .map(schema_value_to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        SchemaValue::Object(values) => format!(
+            "{{{}}}",
+            values
+                .iter()
+                .map(|(name, value)| format!("{name}: {}", schema_value_to_string(value)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+fn merge_names(target: &mut Vec<String>, names: &[String]) {
+    for name in names {
+        if !target.contains(name) {
+            target.push(name.clone());
+        }
+    }
 }
 
 fn parse_enum_internal_values(v: &Value) -> HashMap<String, HashMap<String, String>> {
@@ -785,43 +1249,11 @@ for (const typeName of Object.keys(typeMap)) {
 process.stdout.write(JSON.stringify({ __schema: intro.__schema, enumInternalValues }));
 "#;
 
-/// CommonJS one-shot: reads `CODEGEN_SCHEMA_PATH`, reads SDL, builds schema, introspects, prints JSON.
-const GRAPHQL_FILE_LOADER_SCRIPT_CJS: &str = r#"
-const { buildSchema, introspectionFromSchema } = require('graphql');
-
-const absPath = process.env.CODEGEN_SCHEMA_PATH;
-let sdl = process.env.CODEGEN_SCHEMA_SDL || (absPath ? require('fs').readFileSync(absPath, 'utf8') : '');
-if (!sdl) {
-  process.stderr.write('CODEGEN_SCHEMA_SDL is not set');
-  process.exit(1);
-}
-
-if (/^extend\s+type\s+/m.test(sdl)) {
-  sdl = sdl
-    .replace(/^extend\s+type\s+/gm, 'type ')
-    .replace(/^extend\s+schema[\s\S]*?(?=\n\s*(type|interface|enum|scalar|union|input)\s)/m, '');
-}
-
-let schema;
-let intro;
-try {
-  schema = buildSchema(sdl, { assumeValidSDL: true });
-  intro = introspectionFromSchema(schema);
-} catch (err) {
-  if (!String(err && err.message || err).includes('Query root type must be provided')) {
-    throw err;
-  }
-  schema = buildSchema(`${sdl}\n\ntype Query { _empty: String }\nschema { query: Query }`, { assumeValidSDL: true });
-  intro = introspectionFromSchema(schema);
-  intro.__schema.queryType = null;
-  intro.__schema.types = intro.__schema.types.filter(type => type.name !== 'Query');
-}
-process.stdout.write(JSON.stringify({ __schema: intro.__schema }));
-"#;
-
 #[cfg(test)]
 mod tests {
-    use super::{glob_root_and_pattern, pointer_might_be_inline_graphql};
+    use super::{
+        glob_root_and_pattern, normalize_orphan_schema_extensions, pointer_might_be_inline_graphql,
+    };
     use std::path::Path;
 
     #[test]
@@ -840,6 +1272,29 @@ mod tests {
     #[test]
     fn pointer_might_be_inline_graphql_rejects_glob() {
         assert!(!pointer_might_be_inline_graphql("./dev-test/**/*.graphql"));
+    }
+
+    #[test]
+    fn normalize_orphan_schema_extensions_promotes_first_extension() {
+        let normalized = normalize_orphan_schema_extensions(
+            r#"
+extend type Query {
+  users: [User]
+}
+
+extend type User {
+  id: ID!
+}
+
+extend type User {
+  name: String
+}
+"#,
+        );
+
+        assert!(normalized.contains("type Query {\n  users: [User]\n}"));
+        assert!(normalized.contains("type User {\n  id: ID!\n}"));
+        assert!(normalized.contains("extend type User {\n  name: String\n}"));
     }
 
     #[test]

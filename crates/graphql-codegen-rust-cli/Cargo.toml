@@ -23,3 +23,4 @@ plugin-helpers = { path = "../plugin-helpers" }
 plugin-typescript = { path = "../plugin-typescript" }
 plugin-typescript-operations = { path = "../plugin-typescript-operations" }
 plugin-typed-document-node = { path = "../plugin-typed-document-node" }
+apollo-compiler = { workspace = true }
