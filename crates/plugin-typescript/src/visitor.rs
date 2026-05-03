@@ -149,8 +149,9 @@ impl<'a> TsVisitor<'a> {
             return String::new();
         }
 
-        let mut s = String::from(
-            "/** All built-in and custom scalars, mapped to their actual values */\nexport type Scalars = {\n",
+        let mut s = format!(
+            "/** All built-in and custom scalars, mapped to their actual values */\n{}type Scalars = {{\n",
+            self.get_export_prefix()
         );
         s.push_str("  ID: { input: string; output: string };\n");
         s.push_str("  String: { input: string; output: string };\n");
@@ -196,7 +197,7 @@ impl<'a> TsVisitor<'a> {
             });
 
             if any_value_description {
-                out.push_str(&format!("export type {name} =\n"));
+                out.push_str(&format!("{}type {name} =\n", self.get_export_prefix()));
                 for ev in &enum_values {
                     if let Some(description) = ev.get("description").and_then(|d| d.as_str())
                         && !description.is_empty()
@@ -239,12 +240,16 @@ impl<'a> TsVisitor<'a> {
                         skip_numeric_check,
                     ));
                 }
-                out.push_str(&format!("export type {name} = {};\n\n", parts.join(" | ")));
+                out.push_str(&format!(
+                    "{}type {name} = {};\n\n",
+                    self.get_export_prefix(),
+                    parts.join(" | ")
+                ));
             }
             return Ok(());
         }
 
-        out.push_str(&format!("export enum {name} {{\n"));
+        out.push_str(&format!("{}enum {name} {{\n", self.get_export_prefix()));
 
         for ev in enum_values {
             if let Some(description) = ev.get("description").and_then(|d| d.as_str())
@@ -300,9 +305,9 @@ impl<'a> TsVisitor<'a> {
             .unwrap_or_default();
 
         if implements.is_empty() {
-            out.push_str(&format!("export type {name} = {{\n"));
+            out.push_str(&format!("{}type {name} = {{\n", self.get_export_prefix()));
         } else {
-            out.push_str(&format!("export type {name} = "));
+            out.push_str(&format!("{}type {name} = ", self.get_export_prefix()));
             for (idx, i) in implements.iter().enumerate() {
                 if idx > 0 {
                     out.push_str(" & ");
@@ -363,7 +368,8 @@ impl<'a> TsVisitor<'a> {
                         args_block.push_str(&transform_comment(description, 0, false));
                     }
                     args_block.push_str(&format!(
-                        "export type {name}{}Args = {{\n",
+                        "{}type {name}{}Args = {{\n",
+                        self.get_export_prefix(),
                         to_pascal_case(fname)
                     ));
                     let mut sorted_args: Vec<&Value> = args.iter().collect();
@@ -427,7 +433,7 @@ impl<'a> TsVisitor<'a> {
             out.push_str(&transform_comment(description, 0, false));
         }
 
-        out.push_str(&format!("export type {name} = {{\n"));
+        out.push_str(&format!("{}type {name} = {{\n", self.get_export_prefix()));
 
         let mut arg_types: Vec<String> = Vec::new();
         let mut sorted_fields: Vec<&Value> = fields.iter().collect();
@@ -472,7 +478,8 @@ impl<'a> TsVisitor<'a> {
                     args_block.push_str(&transform_comment(description, 0, false));
                 }
                 args_block.push_str(&format!(
-                    "export type {name}{}Args = {{\n",
+                    "{}type {name}{}Args = {{\n",
+                    self.get_export_prefix(),
                     to_pascal_case(fname)
                 ));
                 let mut sorted_args: Vec<&Value> = args.iter().collect();
@@ -527,7 +534,7 @@ impl<'a> TsVisitor<'a> {
             out.push_str(&transform_comment(description, 0, false));
         }
 
-        out.push_str(&format!("export type {name} = {{\n"));
+        out.push_str(&format!("{}type {name} = {{\n", self.get_export_prefix()));
         let mut sorted_fields: Vec<&Value> = fields.iter().collect();
         sorted_fields.sort_by_key(|f| f.get("name").and_then(|n| n.as_str()).unwrap_or(""));
         for f in sorted_fields {
@@ -590,7 +597,7 @@ impl<'a> TsVisitor<'a> {
             .collect();
         members.sort();
 
-        out.push_str(&format!("export type {name} = "));
+        out.push_str(&format!("{}type {name} = ", self.get_export_prefix()));
         for (idx, m) in members.iter().enumerate() {
             if idx > 0 {
                 out.push_str(" | ");

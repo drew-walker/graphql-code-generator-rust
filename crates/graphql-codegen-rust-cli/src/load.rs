@@ -1,4 +1,4 @@
-//! Mirrors `~/Projects/graphql-code-generator/packages/graphql-codegen-cli/src/load.ts`
+//! Mirrors `graphql-code-generator/packages/graphql-codegen-cli/src/load.ts`
 //! (`loadSchema` / `loadDocuments`). Schema from JSON, SDL (via Node), or JS; documents from globs
 //! or inline GraphQL strings (same as upstream `loadDocuments` + `@graphql-tools/load`).
 
@@ -51,7 +51,7 @@ fn is_graphql_document(path: &Path) -> bool {
     ext == "graphql" || ext == "gql"
 }
 
-/// When a `documents` entry is a raw GraphQL string (as in `~/Projects/graphql-code-generator`
+/// When a `documents` entry is a raw GraphQL string (as in `graphql-code-generator`
 /// `dev-test/codegen.ts` → `documents: ['query test { ... }']`), globs match no files. Upstream
 /// `@graphql-tools/load` still parses these; we detect the same case after an empty glob walk.
 fn pointer_might_be_inline_graphql(pointer: &str) -> bool {
@@ -393,3 +393,26 @@ const schema = buildSchema(sdl);
 const intro = introspectionFromSchema(schema);
 process.stdout.write(JSON.stringify({ __schema: intro.__schema }));
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::pointer_might_be_inline_graphql;
+
+    #[test]
+    fn pointer_might_be_inline_graphql_dev_test_query_string() {
+        assert!(pointer_might_be_inline_graphql(
+            "query test { testArr1 testArr2 testArr3 }"
+        ));
+    }
+
+    #[test]
+    fn pointer_might_be_inline_graphql_mutation_and_fragment() {
+        assert!(pointer_might_be_inline_graphql("mutation M { f }"));
+        assert!(pointer_might_be_inline_graphql("fragment F on T { x }"));
+    }
+
+    #[test]
+    fn pointer_might_be_inline_graphql_rejects_glob() {
+        assert!(!pointer_might_be_inline_graphql("./dev-test/**/*.graphql"));
+    }
+}

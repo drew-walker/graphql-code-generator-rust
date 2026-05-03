@@ -177,6 +177,14 @@ impl<'a> TypeScriptDocumentsVisitor<'a> {
         }
     }
 
+    fn export_type_leading(&self) -> &'static str {
+        if self.config.no_export {
+            "type "
+        } else {
+            "export type "
+        }
+    }
+
     pub fn generate(&self) -> Result<ComplexPluginOutput> {
         let merged = self.merge_documents();
         let fragments = collect_fragments(&merged);
@@ -202,7 +210,8 @@ impl<'a> TypeScriptDocumentsVisitor<'a> {
                             members.push(inner_name);
                         }
                         content_parts.push(format!(
-                            "export type {name}Fragment = {};",
+                            "{}{name}Fragment = {};",
+                            self.export_type_leading(),
                             members.join(" | ")
                         ));
                     } else {
@@ -211,7 +220,10 @@ impl<'a> TypeScriptDocumentsVisitor<'a> {
                             &frag.selection_set,
                             &fragments,
                         )?;
-                        content_parts.push(format!("export type {name}Fragment = {ts};"));
+                        content_parts.push(format!(
+                            "{}{name}Fragment = {ts};",
+                            self.export_type_leading()
+                        ));
                     }
                 }
                 Definition::Operation(op) => {
@@ -235,11 +247,17 @@ impl<'a> TypeScriptDocumentsVisitor<'a> {
                     let result_name = op_base;
 
                     let variables_ts = self.operation_variables_ts(op)?;
-                    content_parts.push(format!("export type {vars_name} = {variables_ts};"));
+                    content_parts.push(format!(
+                        "{}{vars_name} = {variables_ts};",
+                        self.export_type_leading()
+                    ));
 
                     let result_ts =
                         self.selection_set_object_ts(op_kind, selection_set, &fragments)?;
-                    content_parts.push(format!("export type {result_name} = {result_ts};"));
+                    content_parts.push(format!(
+                        "{}{result_name} = {result_ts};",
+                        self.export_type_leading()
+                    ));
                 }
             }
         }

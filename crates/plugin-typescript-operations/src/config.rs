@@ -18,4 +18,19 @@ pub struct TypeScriptDocumentsPluginConfig {
     /// Mirrors upstream `immutableTypes` for operation result selection objects.
     #[serde(default)]
     pub immutable_types: bool,
+    /// Mirrors upstream `noExport` (omit `export` on generated operation types).
+    #[serde(default)]
+    pub no_export: bool,
+    /// Mirrors upstream `flattenGeneratedTypes` (not implemented yet; reserved for parity).
+    #[serde(default)]
+    pub flatten_generated_types: bool,
+    /// Mirrors upstream `flattenGeneratedTypesIncludeFragments`.
+    #[serde(default)]
+    pub flatten_generated_types_include_fragments: bool,
+    /// Mirrors upstream `skipTypename`.
+    #[serde(default)]
+    pub skip_typename: bool,
+    /// Mirrors upstream `mergeFragmentTypes`.
+    #[serde(default)]
+    pub merge_fragment_types: bool,
 }
