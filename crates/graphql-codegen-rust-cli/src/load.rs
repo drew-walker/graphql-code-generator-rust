@@ -4,6 +4,7 @@
 
 use anyhow::{Context as _, Result};
 use apollo_compiler::Schema as ApolloSchema;
+use apollo_compiler::parser::Parser;
 use globwalk::GlobWalkerBuilder;
 use graphql_parser::schema::{
     Definition as SchemaDefinitionAst, Document as SchemaDocument, EnumType, EnumTypeExtension,
@@ -128,7 +129,7 @@ async fn load_schema_graphql_pointers(
         );
     }
 
-    let mut sdl = String::new();
+    let mut parts = Vec::new();
     for file in files {
         debug_event(
             timing_enabled,
@@ -143,12 +144,9 @@ async fn load_schema_graphql_pointers(
             format!("read schema file {}", file.display()),
             read_started,
         );
-        if !sdl.is_empty() {
-            sdl.push('\n');
-        }
-        sdl.push_str(&text);
+        parts.push((file, text));
     }
-    load_schema_graphql_sdl(&sdl, timing_enabled)
+    load_schema_graphql_files(&parts, timing_enabled)
 }
 
 fn is_graphql_document(path: &Path) -> bool {
@@ -690,6 +688,54 @@ fn load_schema_graphql_sdl(sdl: &str, timing_enabled: bool) -> Result<SchemaGene
     let normalized_sdl = normalize_orphan_schema_extensions(&strip_schema_extensions(sdl));
     let apollo_schema = ApolloSchema::parse(&normalized_sdl, "schema.graphql")
         .map_err(|errors| anyhow::anyhow!("failed to parse SDL schema:\n{errors}"))?;
+    schema_generation_input_from_apollo_schema(apollo_schema)
+}
+
+/// Loads SDL from multiple files using apollo-compiler’s schema builder (one parse per path).
+/// Concatenating files into one string and calling [`ApolloSchema::parse`] makes the compiler
+/// treat duplicate type names as collisions in a single document; upstream `@graphql-tools/load`
+/// merges across files instead.
+fn load_schema_graphql_files(
+    files: &[(PathBuf, String)],
+    timing_enabled: bool,
+) -> Result<SchemaGenerationInput> {
+    if files.is_empty() {
+        anyhow::bail!("load_schema_graphql_files: empty file list");
+    }
+    let total_bytes: usize = files.iter().map(|(_, s)| s.len()).sum();
+    debug_event(
+        timing_enabled,
+        format!(
+            "starting apollo-compiler multi-file SDL schema parse ({} files, {} bytes)",
+            files.len(),
+            total_bytes
+        ),
+    );
+
+    let mut defined = HashSet::new();
+    for (_, raw) in files {
+        defined.extend(collect_schema_definition_type_names(
+            &strip_schema_extensions(raw),
+        ));
+    }
+
+    let mut builder = ApolloSchema::builder();
+    let mut parser = Parser::new();
+    for (path, raw) in files {
+        let stripped = strip_schema_extensions(raw);
+        let normalized = normalize_orphan_schema_extensions_pass2(&stripped, &mut defined);
+        parser.parse_into_schema_builder(normalized, path, &mut builder);
+    }
+
+    let apollo_schema = builder
+        .build()
+        .map_err(|errors| anyhow::anyhow!("failed to parse SDL schema:\n{errors}"))?;
+    schema_generation_input_from_apollo_schema(apollo_schema)
+}
+
+fn schema_generation_input_from_apollo_schema(
+    apollo_schema: ApolloSchema,
+) -> Result<SchemaGenerationInput> {
     let merged_sdl = apollo_schema.serialize().to_string();
     let document = parse_schema::<String>(&merged_sdl)
         .context("failed to parse SDL schema")?
@@ -732,7 +778,7 @@ fn strip_schema_extensions(sdl: &str) -> String {
     out
 }
 
-fn normalize_orphan_schema_extensions(sdl: &str) -> String {
+fn collect_schema_definition_type_names(sdl: &str) -> HashSet<String> {
     let mut defined = HashSet::new();
     for line in sdl.lines() {
         let trimmed = line.trim_start();
@@ -743,7 +789,14 @@ fn normalize_orphan_schema_extensions(sdl: &str) -> String {
             defined.insert(name.to_string());
         }
     }
+    defined
+}
 
+/// Second pass of orphan-extension normalization: promotes `extend type Foo` to `type Foo` when
+/// `Foo` is not in `defined`, then inserts `Foo`. Callers seed `defined` appropriately; for
+/// multi-file loads, seed with all base definitions across files, then reuse the same `defined`
+/// across files in pointer order so promotions in an earlier file affect later files.
+fn normalize_orphan_schema_extensions_pass2(sdl: &str, defined: &mut HashSet<String>) -> String {
     let mut out = String::new();
     for line in sdl.lines() {
         let trimmed = line.trim_start();
@@ -762,6 +815,11 @@ fn normalize_orphan_schema_extensions(sdl: &str) -> String {
         out.push('\n');
     }
     out
+}
+
+fn normalize_orphan_schema_extensions(sdl: &str) -> String {
+    let mut defined = collect_schema_definition_type_names(sdl);
+    normalize_orphan_schema_extensions_pass2(sdl, &mut defined)
 }
 
 fn type_name_from_definition_line(line: &str) -> Option<&str> {
@@ -1252,9 +1310,10 @@ process.stdout.write(JSON.stringify({ __schema: intro.__schema, enumInternalValu
 #[cfg(test)]
 mod tests {
     use super::{
-        glob_root_and_pattern, normalize_orphan_schema_extensions, pointer_might_be_inline_graphql,
+        glob_root_and_pattern, load_schema_graphql_files, normalize_orphan_schema_extensions,
+        pointer_might_be_inline_graphql,
     };
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn pointer_might_be_inline_graphql_dev_test_query_string() {
@@ -1316,5 +1375,35 @@ extend type User {
         let glob = glob_root_and_pattern(Path::new("/repo"), "**/*.graphql");
         assert_eq!(glob.root, Path::new("/repo"));
         assert_eq!(glob.pattern, "**/*.graphql");
+    }
+
+    /// Concatenating these into one SDL makes apollo-compiler reject a duplicate `AccountStatus`
+    /// definition; loading as separate files merges `extend enum` into the base enum.
+    #[test]
+    fn load_schema_graphql_files_merges_enum_extension_across_files() {
+        let files = vec![
+            (
+                PathBuf::from("schema.graphql"),
+                "type Query { _: Boolean }\nenum AccountStatus { OPEN }\n".to_string(),
+            ),
+            (
+                PathBuf::from("extensions.graphql"),
+                "extend enum AccountStatus { CLOSED }\n".to_string(),
+            ),
+        ];
+        let out = load_schema_graphql_files(&files, false).expect("multi-file schema");
+        let types = out.introspection["types"].as_array().expect("types array");
+        let account_status = types
+            .iter()
+            .find(|t| t["name"] == "AccountStatus")
+            .expect("AccountStatus type");
+        let names: Vec<_> = account_status["enumValues"]
+            .as_array()
+            .expect("enumValues")
+            .iter()
+            .map(|v| v["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"OPEN"));
+        assert!(names.contains(&"CLOSED"));
     }
 }
