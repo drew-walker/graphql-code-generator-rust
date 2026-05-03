@@ -70,10 +70,18 @@ async fn load_schema_graphql_pointers(
     for pointer in pointers {
         let pointer = pointer.strip_prefix("./").unwrap_or(pointer);
         if pointer_needs_glob_walk(pointer) {
-            debug_event(timing_enabled, format!("starting schema glob `{pointer}`"));
+            let glob = glob_root_and_pattern(cwd, pointer);
+            debug_event(
+                timing_enabled,
+                format!(
+                    "starting schema glob `{pointer}` from {} with pattern `{}`",
+                    glob.root.display(),
+                    glob.pattern
+                ),
+            );
             let glob_started = Instant::now();
             let before = files.len();
-            let walker = GlobWalkerBuilder::from_patterns(cwd, &[pointer])
+            let walker = GlobWalkerBuilder::from_patterns(&glob.root, &[glob.pattern.as_str()])
                 .follow_links(true)
                 .file_type(globwalk::FileType::FILE)
                 .build()
@@ -81,7 +89,7 @@ async fn load_schema_graphql_pointers(
                     format!("failed to build glob walker for schema pointer `{pointer}`")
                 })?;
             for entry in walker.into_iter().flatten() {
-                let path = entry.path().to_path_buf();
+                let path = normalize_glob_entry_path(&glob.root, entry.path());
                 let ext = path
                     .extension()
                     .and_then(|e| e.to_str())
@@ -191,6 +199,62 @@ fn pointer_needs_glob_walk(pointer: &str) -> bool {
         .any(|c| matches!(c, '*' | '?' | '[' | ']' | '{' | '}'))
 }
 
+struct GlobPointer {
+    root: PathBuf,
+    pattern: String,
+}
+
+fn glob_root_and_pattern(cwd: &Path, pointer: &str) -> GlobPointer {
+    let pointer = pointer.strip_prefix("./").unwrap_or(pointer);
+    let Some(first_glob_idx) = pointer
+        .char_indices()
+        .find_map(|(idx, c)| matches!(c, '*' | '?' | '[' | ']' | '{' | '}').then_some(idx))
+    else {
+        return GlobPointer {
+            root: cwd.to_path_buf(),
+            pattern: pointer.to_string(),
+        };
+    };
+
+    let literal_prefix = &pointer[..first_glob_idx];
+    let Some(separator_idx) = literal_prefix.rfind('/') else {
+        return GlobPointer {
+            root: cwd.to_path_buf(),
+            pattern: pointer.to_string(),
+        };
+    };
+
+    let (root_part, pattern) = if separator_idx == 0 && pointer.starts_with('/') {
+        ("/", &pointer[1..])
+    } else {
+        (&pointer[..separator_idx], &pointer[separator_idx + 1..])
+    };
+
+    let root = if root_part.is_empty() {
+        cwd.to_path_buf()
+    } else {
+        let root = Path::new(root_part);
+        if root.is_absolute() {
+            root.to_path_buf()
+        } else {
+            cwd.join(root)
+        }
+    };
+
+    GlobPointer {
+        root,
+        pattern: pattern.to_string(),
+    }
+}
+
+fn normalize_glob_entry_path(root: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    }
+}
+
 fn add_excluded_path(set: &mut HashSet<PathBuf>, path: PathBuf) {
     match std::fs::canonicalize(&path) {
         Ok(c) => {
@@ -248,13 +312,39 @@ async fn load_documents_for_pointers(
             continue;
         }
 
+        if !pointer_needs_glob_walk(&pat_norm) {
+            let candidate = resolve_path(cwd, &pat_norm);
+            debug_event(
+                timing_enabled,
+                format!(
+                    "{doc_type} checking literal document pointer {}",
+                    candidate.display()
+                ),
+            );
+            if candidate.is_file()
+                && (is_graphql_document(&candidate) || is_code_document(&candidate))
+            {
+                files.push(candidate);
+            }
+            continue;
+        }
+
         debug_event(
             timing_enabled,
-            format!("{doc_type} starting document glob `{pat_norm}`"),
+            format!("{doc_type} preparing document glob `{pat_norm}`"),
+        );
+        let glob = glob_root_and_pattern(cwd, &pat_norm);
+        debug_event(
+            timing_enabled,
+            format!(
+                "{doc_type} starting document glob `{pat_norm}` from {} with pattern `{}`",
+                glob.root.display(),
+                glob.pattern
+            ),
         );
         let glob_started = Instant::now();
         let before = files.len();
-        let walker = GlobWalkerBuilder::from_patterns(cwd, &[pat_norm.as_str()])
+        let walker = GlobWalkerBuilder::from_patterns(&glob.root, &[glob.pattern.as_str()])
             .follow_links(true)
             .file_type(globwalk::FileType::FILE)
             .build()
@@ -262,7 +352,7 @@ async fn load_documents_for_pointers(
 
         let mut matched_file = false;
         for entry in walker.into_iter().flatten() {
-            let path = entry.path().to_path_buf();
+            let path = normalize_glob_entry_path(&glob.root, entry.path());
             if !is_graphql_document(&path) && !is_code_document(&path) {
                 continue;
             }
@@ -290,13 +380,18 @@ async fn load_documents_for_pointers(
         for ex in exclude {
             let ex = ex.strip_prefix("./").unwrap_or(&ex).to_string();
             if pointer_needs_glob_walk(&ex) {
+                let glob = glob_root_and_pattern(cwd, &ex);
                 debug_event(
                     timing_enabled,
-                    format!("{doc_type} starting ignore glob `{ex}`"),
+                    format!(
+                        "{doc_type} starting ignore glob `{ex}` from {} with pattern `{}`",
+                        glob.root.display(),
+                        glob.pattern
+                    ),
                 );
                 let exclude_started = Instant::now();
                 let before = excluded.len();
-                let walker = GlobWalkerBuilder::from_patterns(cwd, &[ex.as_str()])
+                let walker = GlobWalkerBuilder::from_patterns(&glob.root, &[glob.pattern.as_str()])
                     .follow_links(true)
                     .file_type(globwalk::FileType::FILE)
                     .build()
@@ -304,7 +399,10 @@ async fn load_documents_for_pointers(
                         format!("failed to build glob walker for ignore pointer `{ex}`")
                     })?;
                 for entry in walker.into_iter().flatten() {
-                    add_excluded_path(&mut excluded, entry.path().to_path_buf());
+                    add_excluded_path(
+                        &mut excluded,
+                        normalize_glob_entry_path(&glob.root, entry.path()),
+                    );
                 }
                 debug_timing(
                     timing_enabled,
@@ -723,7 +821,8 @@ process.stdout.write(JSON.stringify({ __schema: intro.__schema }));
 
 #[cfg(test)]
 mod tests {
-    use super::pointer_might_be_inline_graphql;
+    use super::{glob_root_and_pattern, pointer_might_be_inline_graphql};
+    use std::path::Path;
 
     #[test]
     fn pointer_might_be_inline_graphql_dev_test_query_string() {
@@ -741,5 +840,26 @@ mod tests {
     #[test]
     fn pointer_might_be_inline_graphql_rejects_glob() {
         assert!(!pointer_might_be_inline_graphql("./dev-test/**/*.graphql"));
+    }
+
+    #[test]
+    fn glob_root_and_pattern_splits_relative_glob_at_literal_prefix() {
+        let glob = glob_root_and_pattern(Path::new("/repo"), "src/**/*.graphql");
+        assert_eq!(glob.root, Path::new("/repo/src"));
+        assert_eq!(glob.pattern, "**/*.graphql");
+    }
+
+    #[test]
+    fn glob_root_and_pattern_splits_absolute_glob_at_literal_prefix() {
+        let glob = glob_root_and_pattern(Path::new("/repo"), "/Users/dwalker/app/src/*.graphqls");
+        assert_eq!(glob.root, Path::new("/Users/dwalker/app/src"));
+        assert_eq!(glob.pattern, "*.graphqls");
+    }
+
+    #[test]
+    fn glob_root_and_pattern_keeps_cwd_for_glob_without_literal_directory() {
+        let glob = glob_root_and_pattern(Path::new("/repo"), "**/*.graphql");
+        assert_eq!(glob.root, Path::new("/repo"));
+        assert_eq!(glob.pattern, "**/*.graphql");
     }
 }
