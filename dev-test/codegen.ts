@@ -5,46 +5,47 @@ const config: CodegenConfig = {
     afterAllFileWrite: ['prettier --write'],
   },
   emitLegacyCommonJSImports: false,
+  allowPartialOutputs: false,
   generates: {
-    // './dev-test/test-schema/resolvers-types.ts': {
-    //   schema: './dev-test/test-schema/schema-text.js',
-    //   plugins: ['typescript', 'typescript-resolvers'],
-    // },
-    // './dev-test/test-schema/flow-types.flow.js': {
-    //   schema: './dev-test/test-schema/schema.json',
-    //   plugins: ['flow', 'flow-resolvers'],
-    // },
-    // './dev-test/test-schema/resolvers-root.ts': {
-    //   schema: './dev-test/test-schema/schema-with-root.graphql',
-    //   plugins: ['typescript', 'typescript-resolvers'],
-    // },
-    // './dev-test/test-schema/resolvers-federation.ts': {
-    //   schema: './dev-test/test-schema/schema-federation.graphql',
-    //   config: { federation: true },
-    //   plugins: ['typescript', 'typescript-resolvers'],
-    // },
-    // './dev-test/test-schema/resolvers-stitching.ts': {
-    //   schema: './dev-test/test-schema/schema-text.js',
-    //   plugins: ['typescript', { 'typescript-resolvers': { noSchemaStitching: false } }],
-    // },
-    // './dev-test/test-schema/typings.ts': {
-    //   schema: './dev-test/test-schema/schema.json',
-    //   plugins: ['typescript', 'typescript-resolvers'],
-    // },
+    './dev-test/test-schema/resolvers-types.ts': {
+      schema: './dev-test/test-schema/schema-text.js',
+      plugins: ['typescript', 'typescript-resolvers'],
+    },
+    './dev-test/test-schema/flow-types.flow.js': {
+      schema: './dev-test/test-schema/schema.json',
+      plugins: ['flow', 'flow-resolvers'],
+    },
+    './dev-test/test-schema/resolvers-root.ts': {
+      schema: './dev-test/test-schema/schema-with-root.graphql',
+      plugins: ['typescript', 'typescript-resolvers'],
+    },
+    './dev-test/test-schema/resolvers-federation.ts': {
+      schema: './dev-test/test-schema/schema-federation.graphql',
+      config: { federation: true },
+      plugins: ['typescript', 'typescript-resolvers'],
+    },
+    './dev-test/test-schema/resolvers-stitching.ts': {
+      schema: './dev-test/test-schema/schema-text.js',
+      plugins: ['typescript', { 'typescript-resolvers': { noSchemaStitching: false } }],
+    },
+    './dev-test/test-schema/typings.ts': {
+      schema: './dev-test/test-schema/schema.json',
+      plugins: ['typescript', 'typescript-resolvers'],
+    },
     './dev-test/test-schema/typings.avoidOptionals.ts': {
       schema: './dev-test/test-schema/schema.json',
       config: { avoidOptionals: true },
       plugins: ['typescript'],
     },
-    // './dev-test/test-schema/typings.wrapped.ts': {
-    //   schema: './dev-test/test-schema/schema.json',
-    //   plugins: [
-    //     { add: { content: 'declare namespace GraphQL {' } },
-    //     { add: { placement: 'append', content: '}' } },
-    //     'typescript',
-    //     'typescript-operations',
-    //   ],
-    // },
+    './dev-test/test-schema/typings.wrapped.ts': {
+      schema: './dev-test/test-schema/schema.json',
+      plugins: [
+        { add: { content: 'declare namespace GraphQL {' } },
+        { add: { placement: 'append', content: '}' } },
+        'typescript',
+        'typescript-operations',
+      ],
+    },
     './dev-test/test-schema/env.types.ts': {
       schema: process.env.SCHEMA_PATH,
       plugins: ['typescript'],
@@ -58,15 +59,15 @@ const config: CodegenConfig = {
       schema: './dev-test/test-schema/schema-object.js',
       plugins: ['typescript'],
     },
-  //   './dev-test/githunt/graphql-declared-modules.d.ts': {
-  //     schema: './dev-test/githunt/schema.json',
-  //     documents: [
-  //       './dev-test/githunt/**/*.graphql',
-  //       './dev-test-outer-dir/githunt/**/*.graphql',
-  //       '!**/nothing-should-use-this-query.graphql',
-  //     ],
-  //     plugins: ['typescript-graphql-files-modules'],
-  //   },
+    './dev-test/githunt/graphql-declared-modules.d.ts': {
+      schema: './dev-test/githunt/schema.json',
+      documents: [
+        './dev-test/githunt/**/*.graphql',
+        './dev-test-outer-dir/githunt/**/*.graphql',
+        '!**/nothing-should-use-this-query.graphql',
+      ],
+      plugins: ['typescript-graphql-files-modules'],
+    },
     './dev-test/githunt/typed-document-nodes.ts': {
       schema: './dev-test/githunt/schema.json',
       documents: './dev-test/githunt/**/*.graphql',
@@ -181,12 +182,12 @@ const config: CodegenConfig = {
       config: { enumsAsTypes: true },
       plugins: ['typescript', 'typescript-operations'],
     },
-  //   './dev-test/modules/': {
-  //     schema: './dev-test/modules/*/types/*.graphql',
-  //     preset: 'graphql-modules',
-  //     presetConfig: { baseTypesPath: 'types.ts', filename: 'generated.ts' },
-  //     plugins: ['typescript', 'typescript-resolvers'],
-  //   },
+    './dev-test/modules/': {
+      schema: './dev-test/modules/*/types/*.graphql',
+      preset: 'graphql-modules',
+      presetConfig: { baseTypesPath: 'types.ts', filename: 'generated.ts' },
+      plugins: ['typescript', 'typescript-resolvers'],
+    },
     './dev-test/star-wars/types.globallyAvailable.d.ts': {
       schema: './dev-test/star-wars/schema.json',
       documents: './dev-test/star-wars/**/*.graphql',
@@ -210,28 +211,28 @@ const config: CodegenConfig = {
       documents: './dev-test/star-wars/**/*.graphql',
       plugins: ['typescript', 'typescript-operations'],
     },
-  //   './dev-test/gql-tag-operations/gql/': {
-  //     schema: './dev-test/gql-tag-operations/schema.graphql',
-  //     documents: './dev-test/gql-tag-operations/src/**/*.ts',
-  //     preset: 'client',
-  //   },
-  //   './dev-test/gql-tag-operations/graphql/': {
-  //     schema: './dev-test/gql-tag-operations/schema.graphql',
-  //     documents: './dev-test/gql-tag-operations/src/**/*.ts',
-  //     preset: 'client',
-  //   },
-  //   './dev-test/gql-tag-operations-urql/gql/': {
-  //     schema: './dev-test/gql-tag-operations-urql/schema.graphql',
-  //     documents: './dev-test/gql-tag-operations-urql/src/**/*.ts',
-  //     preset: 'client',
-  //     presetConfig: { augmentedModuleName: '@urql/core' },
-  //   },
-  //   './dev-test/gql-tag-operations-masking/gql/': {
-  //     schema: './dev-test/gql-tag-operations-masking/schema.graphql',
-  //     documents: './dev-test/gql-tag-operations-masking/src/**/*.tsx',
-  //     preset: 'client',
-  //     presetConfig: { fragmentMasking: true },
-  //   },
+    './dev-test/gql-tag-operations/gql/': {
+      schema: './dev-test/gql-tag-operations/schema.graphql',
+      documents: './dev-test/gql-tag-operations/src/**/*.ts',
+      preset: 'client',
+    },
+    './dev-test/gql-tag-operations/graphql/': {
+      schema: './dev-test/gql-tag-operations/schema.graphql',
+      documents: './dev-test/gql-tag-operations/src/**/*.ts',
+      preset: 'client',
+    },
+    './dev-test/gql-tag-operations-urql/gql/': {
+      schema: './dev-test/gql-tag-operations-urql/schema.graphql',
+      documents: './dev-test/gql-tag-operations-urql/src/**/*.ts',
+      preset: 'client',
+      presetConfig: { augmentedModuleName: '@urql/core' },
+    },
+    './dev-test/gql-tag-operations-masking/gql/': {
+      schema: './dev-test/gql-tag-operations-masking/schema.graphql',
+      documents: './dev-test/gql-tag-operations-masking/src/**/*.tsx',
+      preset: 'client',
+      presetConfig: { fragmentMasking: true },
+    },
     './dev-test/test-null-value/result.d.ts': {
       schema: './dev-test/test-null-value/schema.graphql',
       documents: ['./dev-test/test-null-value/query.ts'],
@@ -243,30 +244,30 @@ const config: CodegenConfig = {
         mergeFragmentTypes: true,
       },
     },
-  //   './dev-test/subpath-import/result.d.ts': {
-  //     schema: './dev-test/subpath-import/schema.graphql',
-  //     plugins: ['typescript', 'typescript-resolvers'],
-  //     config: {
-  //       contextType: '\\#test-null-value/context#TestContext',
-  //       fieldContextTypes: ['mutation.createUser#\\#test/root#FiedContextType'],
-  //       enumValues: {
-  //         RoleStatus: '\\#changeName/server/drizzle/schema#RoleStatus',
-  //       },
-  //     },
-  //   },
-  //   './dev-test/test-federation/generated/types.ts': {
-  //     schema: './dev-test/test-federation/schema.gql',
-  //     plugins: ['typescript', 'typescript-resolvers'],
-  //     config: {
-  //       mapperTypeSuffix: 'Mapper',
-  //       enumsAsTypes: true,
-  //       useIndexSignature: true,
-  //       maybeValue: 'T | null | undefined',
-  //       scalars: {
-  //         CarKey: 'string',
-  //       },
-  //     },
-  //   },
+    './dev-test/subpath-import/result.d.ts': {
+      schema: './dev-test/subpath-import/schema.graphql',
+      plugins: ['typescript', 'typescript-resolvers'],
+      config: {
+        contextType: '\\#test-null-value/context#TestContext',
+        fieldContextTypes: ['mutation.createUser#\\#test/root#FiedContextType'],
+        enumValues: {
+          RoleStatus: '\\#changeName/server/drizzle/schema#RoleStatus',
+        },
+      },
+    },
+    './dev-test/test-federation/generated/types.ts': {
+      schema: './dev-test/test-federation/schema.gql',
+      plugins: ['typescript', 'typescript-resolvers'],
+      config: {
+        mapperTypeSuffix: 'Mapper',
+        enumsAsTypes: true,
+        useIndexSignature: true,
+        maybeValue: 'T | null | undefined',
+        scalars: {
+          CarKey: 'string',
+        },
+      },
+    },
     // #region externalDocuments option
     './dev-test/external-documents/app/types.generated.ts': {
       schema: './dev-test/external-documents/schema.graphqls',

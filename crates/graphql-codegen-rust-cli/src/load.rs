@@ -16,11 +16,9 @@ pub async fn load_schema(cwd: &Path, pointers: &[String]) -> Result<SchemaGenera
     if pointers.is_empty() {
         anyhow::bail!("load_schema: empty schema pointers");
     }
-    if pointers.len() > 1 {
-        anyhow::bail!(
-            "load_schema: multiple schema pointers not supported yet (got {})",
-            pointers.len()
-        );
+
+    if pointers.len() > 1 || pointers.iter().any(|p| pointer_needs_glob_walk(p)) {
+        return load_schema_graphql_pointers(cwd, pointers).await;
     }
 
     let path = resolve_path(cwd, &pointers[0]);
@@ -39,6 +37,59 @@ pub async fn load_schema(cwd: &Path, pointers: &[String]) -> Result<SchemaGenera
             path.display()
         ),
     }
+}
+
+async fn load_schema_graphql_pointers(
+    cwd: &Path,
+    pointers: &[String],
+) -> Result<SchemaGenerationInput> {
+    let mut files = Vec::new();
+    for pointer in pointers {
+        let pointer = pointer.strip_prefix("./").unwrap_or(pointer);
+        if pointer_needs_glob_walk(pointer) {
+            let walker = GlobWalkerBuilder::from_patterns(cwd, &[pointer])
+                .follow_links(true)
+                .file_type(globwalk::FileType::FILE)
+                .build()
+                .with_context(|| {
+                    format!("failed to build glob walker for schema pointer `{pointer}`")
+                })?;
+            for entry in walker.into_iter().flatten() {
+                let path = entry.path().to_path_buf();
+                let ext = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.to_ascii_lowercase())
+                    .unwrap_or_default();
+                if matches!(ext.as_str(), "graphql" | "gql" | "graphqls") {
+                    files.push(path);
+                }
+            }
+        } else {
+            files.push(resolve_path(cwd, pointer));
+        }
+    }
+
+    files.sort();
+    files.dedup();
+    if files.is_empty() {
+        anyhow::bail!(
+            "load_schema: no schema files matched pointers {:?}",
+            pointers
+        );
+    }
+
+    let mut sdl = String::new();
+    for file in files {
+        let text = tokio::fs::read_to_string(&file)
+            .await
+            .with_context(|| format!("failed to read schema {}", file.display()))?;
+        if !sdl.is_empty() {
+            sdl.push('\n');
+        }
+        sdl.push_str(&text);
+    }
+    load_schema_graphql_sdl(&sdl, cwd).await
 }
 
 fn is_graphql_document(path: &Path) -> bool {
@@ -343,13 +394,21 @@ async fn load_schema_graphql_file_loader(path: &Path) -> Result<SchemaGeneration
     let abs = path
         .canonicalize()
         .with_context(|| format!("schema file not found: {}", path.display()))?;
+    let sdl = tokio::fs::read_to_string(&abs)
+        .await
+        .with_context(|| format!("failed to read schema {}", abs.display()))?;
+    load_schema_graphql_sdl(
+        &sdl,
+        abs.parent()
+            .context("schema path has no parent directory")?,
+    )
+    .await
+}
 
+async fn load_schema_graphql_sdl(sdl: &str, cwd: &Path) -> Result<SchemaGenerationInput> {
     let output = tokio::process::Command::new("node")
-        .current_dir(
-            abs.parent()
-                .context("schema path has no parent directory")?,
-        )
-        .env("CODEGEN_SCHEMA_PATH", abs.as_os_str())
+        .current_dir(cwd)
+        .env("CODEGEN_SCHEMA_SDL", sdl)
         .arg("-e")
         .arg(GRAPHQL_FILE_LOADER_SCRIPT_CJS)
         .output()
@@ -358,11 +417,7 @@ async fn load_schema_graphql_file_loader(path: &Path) -> Result<SchemaGeneration
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!(
-            "failed to load SDL schema {}: {}",
-            abs.display(),
-            stderr.trim()
-        );
+        anyhow::bail!("failed to load SDL schema: {}", stderr.trim());
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -411,7 +466,7 @@ fn json_to_display_string(v: &Value) -> String {
 const SCHEMA_LOAD_SCRIPT_CJS: &str = r#"
 const path = require('path');
 const { createRequire } = require('module');
-const { introspectionFromSchema } = require('graphql');
+const { buildSchema, introspectionFromSchema } = require('graphql');
 
 const absPath = process.env.CODEGEN_SCHEMA_PATH;
 if (!absPath) {
@@ -422,9 +477,12 @@ if (!absPath) {
 const dir = path.dirname(absPath);
 const req = createRequire(path.join(dir, '_.cjs'));
 const mod = req(absPath);
-const schema = mod.schema ?? mod.default?.schema ?? mod.default;
+let schema = mod.schema ?? mod.default?.schema ?? mod.default;
+if (typeof schema === 'string') {
+  schema = buildSchema(schema);
+}
 if (!schema || typeof schema.getTypeMap !== 'function') {
-  process.stderr.write('Expected a GraphQLSchema export (schema/default.schema/default) from ' + absPath);
+  process.stderr.write('Expected a GraphQLSchema or SDL string export (schema/default.schema/default) from ' + absPath);
   process.exit(1);
 }
 
@@ -449,18 +507,35 @@ process.stdout.write(JSON.stringify({ __schema: intro.__schema, enumInternalValu
 
 /// CommonJS one-shot: reads `CODEGEN_SCHEMA_PATH`, reads SDL, builds schema, introspects, prints JSON.
 const GRAPHQL_FILE_LOADER_SCRIPT_CJS: &str = r#"
-const fs = require('fs');
 const { buildSchema, introspectionFromSchema } = require('graphql');
 
 const absPath = process.env.CODEGEN_SCHEMA_PATH;
-if (!absPath) {
-  process.stderr.write('CODEGEN_SCHEMA_PATH is not set');
+let sdl = process.env.CODEGEN_SCHEMA_SDL || (absPath ? require('fs').readFileSync(absPath, 'utf8') : '');
+if (!sdl) {
+  process.stderr.write('CODEGEN_SCHEMA_SDL is not set');
   process.exit(1);
 }
 
-const sdl = fs.readFileSync(absPath, 'utf8');
-const schema = buildSchema(sdl);
-const intro = introspectionFromSchema(schema);
+if (/^extend\s+type\s+/m.test(sdl)) {
+  sdl = sdl
+    .replace(/^extend\s+type\s+/gm, 'type ')
+    .replace(/^extend\s+schema[\s\S]*?(?=\n\s*(type|interface|enum|scalar|union|input)\s)/m, '');
+}
+
+let schema;
+let intro;
+try {
+  schema = buildSchema(sdl, { assumeValidSDL: true });
+  intro = introspectionFromSchema(schema);
+} catch (err) {
+  if (!String(err && err.message || err).includes('Query root type must be provided')) {
+    throw err;
+  }
+  schema = buildSchema(`${sdl}\n\ntype Query { _empty: String }\nschema { query: Query }`, { assumeValidSDL: true });
+  intro = introspectionFromSchema(schema);
+  intro.__schema.queryType = null;
+  intro.__schema.types = intro.__schema.types.filter(type => type.name !== 'Query');
+}
 process.stdout.write(JSON.stringify({ __schema: intro.__schema }));
 "#;
 

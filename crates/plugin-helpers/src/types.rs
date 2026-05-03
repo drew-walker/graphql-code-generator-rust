@@ -1,9 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
 use graphql_parser::query::Document;
 use serde::de::{self, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
+use serde_json::Value;
 
 /// Mirrors `Types.DocumentNode` (GraphQL AST).
 ///
@@ -100,12 +101,34 @@ pub struct ConfiguredOutput {
     pub documents: Vec<String>,
     #[serde(deserialize_with = "string_or_vec")]
     pub external_documents: Vec<String>,
-    /// In TS, plugins can be strings or `{ [name: string]: object }`.
-    /// For now only string plugin names are supported.
-    pub plugins: Vec<String>,
+    /// Mirrors TS plugin entries: strings or `{ [name: string]: object }`.
+    pub plugins: Vec<PluginSpec>,
     pub preset: Option<String>,
     pub config: serde_json::Map<String, serde_json::Value>,
     pub hooks: HooksConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum PluginSpec {
+    Name(String),
+    Config(BTreeMap<String, Value>),
+}
+
+impl PluginSpec {
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            Self::Name(name) => Some(name),
+            Self::Config(map) => map.keys().next().map(String::as_str),
+        }
+    }
+
+    pub fn config(&self) -> Option<&Value> {
+        match self {
+            Self::Name(_) => None,
+            Self::Config(map) => map.values().next(),
+        }
+    }
 }
 
 /// Wrapper that mirrors how the `generates` map value is typed in TS.

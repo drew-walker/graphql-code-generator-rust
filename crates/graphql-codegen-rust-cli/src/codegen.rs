@@ -3,6 +3,7 @@ use std::path::Path;
 use crate::config::CodegenContext;
 use crate::load::load_documents;
 use crate::relay_optimize;
+use crate::transitional_plugins;
 use plugin_helpers::types::{Config, FileOutput, OutputConfig};
 use plugin_helpers::utils::{merge_complex_plugin_output, merge_outputs};
 
@@ -37,6 +38,10 @@ pub async fn execute_codegen(context: &mut CodegenContext) -> ExecuteCodegenOutp
         .collect();
 
     for (filename, output_config) in generates {
+        if output_config.preset.is_some() {
+            continue;
+        }
+
         // TS executeCodegen per-output pipeline: load schema → load documents → generate.
         let mut schema_pointers: Vec<String> = Vec::new();
         schema_pointers.extend(config.schema.clone());
@@ -77,9 +82,37 @@ pub async fn execute_codegen(context: &mut CodegenContext) -> ExecuteCodegenOutp
             }
         };
 
+        if has_plugin(&output_config, "flow") || has_plugin(&output_config, "flow-resolvers") {
+            result.push(FileOutput {
+                filename: filename.to_string(),
+                content: Some(transitional_plugins::flow::combined_output(
+                    &schema_input.introspection,
+                )),
+                hooks: output_config.hooks,
+            });
+            continue;
+        }
+
         let mut merged = plugin_helpers::types::ComplexPluginOutput::default();
-        for plugin_name in &output_config.plugins {
-            match plugin_name.as_str() {
+        for plugin_spec in &output_config.plugins {
+            let Some(plugin_name) = plugin_spec.name() else {
+                return ExecuteCodegenOutput {
+                    result,
+                    error: Some(anyhow::anyhow!(
+                        "Invalid empty plugin config for output `{filename}`"
+                    )),
+                };
+            };
+            match plugin_name {
+                "add" => match transitional_plugins::add::plugin(plugin_spec.config()) {
+                    Ok(out) => merge_complex_plugin_output(&mut merged, out),
+                    Err(e) => {
+                        return ExecuteCodegenOutput {
+                            result,
+                            error: Some(e),
+                        };
+                    }
+                },
                 "typescript" => {
                     let ts_config =
                         plugin_typescript::TypeScriptPluginConfig::from_output_config_map(
@@ -148,6 +181,25 @@ pub async fn execute_codegen(context: &mut CodegenContext) -> ExecuteCodegenOutp
                         }
                     }
                 }
+                "typescript-graphql-files-modules" => {
+                    let out = transitional_plugins::graphql_files_modules::plugin(&documents);
+                    merge_complex_plugin_output(&mut merged, out);
+                }
+                "typescript-resolvers" => {
+                    let mut resolver_config = output_config.config.clone();
+                    if let Some(plugin_config) = plugin_spec.config()
+                        && let Some(map) = plugin_config.as_object()
+                    {
+                        for (key, value) in map {
+                            resolver_config.insert(key.clone(), value.clone());
+                        }
+                    }
+                    let out = transitional_plugins::typescript_resolvers::plugin(
+                        &schema_input.introspection,
+                        &resolver_config,
+                    );
+                    merge_complex_plugin_output(&mut merged, out);
+                }
                 other => {
                     return ExecuteCodegenOutput {
                         result,
@@ -159,7 +211,14 @@ pub async fn execute_codegen(context: &mut CodegenContext) -> ExecuteCodegenOutp
             }
         }
 
-        let content = merge_outputs(&merged);
+        let mut content = merge_outputs(&merged);
+        if has_plugin(&output_config, "typescript-resolvers") {
+            content = transitional_plugins::typescript_resolvers::finalize_merged_content(
+                content,
+                &schema_input.introspection,
+                &output_config.config,
+            );
+        }
         result.push(FileOutput {
             filename: filename.to_string(),
             content: Some(content),
@@ -171,6 +230,13 @@ pub async fn execute_codegen(context: &mut CodegenContext) -> ExecuteCodegenOutp
         result,
         error: None,
     }
+}
+
+fn has_plugin(output_config: &plugin_helpers::types::ConfiguredOutput, name: &str) -> bool {
+    output_config
+        .plugins
+        .iter()
+        .any(|plugin| plugin.name() == Some(name))
 }
 
 fn normalize(

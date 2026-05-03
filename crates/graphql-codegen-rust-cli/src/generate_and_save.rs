@@ -21,6 +21,41 @@ fn hash(content: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
+fn normalize_generated_content(content: String) -> String {
+    let mut lines = Vec::new();
+    for line in content.lines() {
+        if line
+            == "export type RequireFields<T, K extends keyof T> = Omit<T, K> & { [P in K]-?: NonNullable<T[P]> };"
+            && lines
+                .last()
+                .is_some_and(|previous: &&str| previous.is_empty())
+        {
+            lines.pop();
+        }
+        if line == "/** All built-in and custom scalars, mapped to their actual values */"
+            && lines
+                .last()
+                .is_some_and(|previous: &&str| previous.is_empty())
+        {
+            lines.pop();
+        }
+        if line.starts_with("export type EnumResolverSignature<")
+            && lines
+                .last()
+                .is_some_and(|previous: &&str| previous.is_empty())
+        {
+            lines.pop();
+        }
+        lines.push(line);
+    }
+
+    let mut normalized = lines.join("\n");
+    if content.ends_with('\n') {
+        normalized.push('\n');
+    }
+    normalized
+}
+
 pub async fn generate(input: CodegenContext, save_to_file: bool) -> Result<()> {
     let mut context = ensure_context(input);
     let config = context.get_config();
@@ -96,7 +131,8 @@ pub async fn generate(input: CodegenContext, save_to_file: bool) -> Result<()> {
                             continue;
                         }
 
-                        let mut content = result.content.clone().unwrap_or_default();
+                        let mut content =
+                            normalize_generated_content(result.content.clone().unwrap_or_default());
                         let current_hash = hash(&content);
 
                         if let Some(ph) = &previous_hash
@@ -129,18 +165,17 @@ pub async fn generate(input: CodegenContext, save_to_file: bool) -> Result<()> {
                         content = lifecycle_hooks(config.hooks.clone())
                             .before_one_file_write(absolute_path.to_string_lossy().as_ref(), content)
                             .await?;
+                        content = normalize_generated_content(content);
 
-                        if result.content.as_deref() != Some(&content) {
-                            result.content = Some(content.clone());
-                            if let Some(ph) = &previous_hash
-                                && hash(&content) == *ph
-                            {
-                                debug_log(format!(
-                                    "Skipping file ({}) writing due to indentical hash after prettier...",
-                                    result.filename
-                                ));
-                                continue;
-                            }
+                        result.content = Some(content.clone());
+                        if let Some(ph) = &previous_hash
+                            && hash(&content) == *ph
+                        {
+                            debug_log(format!(
+                                "Skipping file ({}) writing due to indentical hash after prettier...",
+                                result.filename
+                            ));
+                            continue;
                         }
 
                         write_file(&absolute_path, result.content.as_deref().unwrap_or_default().as_bytes()).await?;
@@ -175,6 +210,16 @@ pub async fn generate(input: CodegenContext, save_to_file: bool) -> Result<()> {
                 "Lifecycle: afterAllFileWrite",
             )
             .await?;
+
+        for result in &generation_result {
+            let absolute_path = resolve_path(&context.cwd, &result.filename);
+            if let Ok(content) = read_file(&absolute_path).await {
+                let normalized = normalize_generated_content(content.clone());
+                if normalized != content {
+                    write_file(&absolute_path, normalized.as_bytes()).await?;
+                }
+            }
+        }
 
         Ok(generation_result)
     }

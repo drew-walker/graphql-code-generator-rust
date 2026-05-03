@@ -9,6 +9,8 @@ mod hooks;
 mod init;
 mod load;
 mod relay_optimize;
+#[path = "local_plugins/mod.rs"]
+mod transitional_plugins;
 mod utils;
 
 use cli::{Command, run_cli};
