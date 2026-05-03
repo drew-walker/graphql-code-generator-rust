@@ -4,7 +4,7 @@ use crate::config::CodegenContext;
 use crate::load::load_documents_with_timing;
 use crate::relay_optimize;
 use crate::transitional_plugins;
-use crate::utils::debugging::debug_timing;
+use crate::utils::debugging::{debug_event, debug_timing};
 use plugin_helpers::types::{Config, FileOutput, OutputConfig};
 use plugin_helpers::utils::{merge_complex_plugin_output, merge_outputs};
 use std::time::Instant;
@@ -51,6 +51,7 @@ pub async fn execute_codegen(context: &mut CodegenContext) -> ExecuteCodegenOutp
 
     for (filename, output_config) in generates {
         let output_started = Instant::now();
+        debug_event(debug_timing_enabled, format!("starting output {filename}"));
         if output_config.preset.is_some() {
             if debug_timing_enabled {
                 eprintln!("[codegen:debug] skipping preset output {filename}");
@@ -64,6 +65,10 @@ pub async fn execute_codegen(context: &mut CodegenContext) -> ExecuteCodegenOutp
         schema_pointers.extend(output_config.schema.clone());
 
         let schema_started = Instant::now();
+        debug_event(
+            debug_timing_enabled,
+            format!("starting schema load for {filename} ({schema_pointers:?})"),
+        );
         let schema_input = match context
             .load_schema_with_timing(&schema_pointers, debug_timing_enabled)
             .await
@@ -91,6 +96,12 @@ pub async fn execute_codegen(context: &mut CodegenContext) -> ExecuteCodegenOutp
         external_document_pointers.extend(output_config.external_documents.clone());
 
         let documents_started = Instant::now();
+        debug_event(
+            debug_timing_enabled,
+            format!(
+                "starting document load for {filename} (documents={document_pointers:?}, external={external_document_pointers:?})"
+            ),
+        );
         let documents = match load_documents_with_timing(
             &context.cwd,
             &document_pointers,
@@ -149,6 +160,10 @@ pub async fn execute_codegen(context: &mut CodegenContext) -> ExecuteCodegenOutp
                 };
             };
             let plugin_started = Instant::now();
+            debug_event(
+                debug_timing_enabled,
+                format!("starting plugin {plugin_name} for {filename}"),
+            );
             match plugin_name {
                 "add" => match transitional_plugins::add::plugin(plugin_spec.config()) {
                     Ok(out) => merge_complex_plugin_output(&mut merged, out),
@@ -263,6 +278,10 @@ pub async fn execute_codegen(context: &mut CodegenContext) -> ExecuteCodegenOutp
         }
 
         let merge_started = Instant::now();
+        debug_event(
+            debug_timing_enabled,
+            format!("starting merge/finalize output {filename}"),
+        );
         let mut content = merge_outputs(&merged);
         if has_plugin(&output_config, "typescript-resolvers") {
             content = transitional_plugins::typescript_resolvers::finalize_merged_content(

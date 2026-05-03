@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use crate::utils::debugging::{debug_timing, timing_enabled_from_env};
+use crate::utils::debugging::{debug_event, debug_timing, timing_enabled_from_env};
 
 /// Loads a GraphQL schema from string pointers (paths relative to `cwd`), matching the
 /// single-string-pointer case of TS `loadSchema` / `context.loadSchema`.
@@ -22,6 +22,10 @@ pub async fn load_schema_with_timing(
 ) -> Result<SchemaGenerationInput> {
     let timing_enabled = timing_enabled || timing_enabled_from_env();
     let started = Instant::now();
+    debug_event(
+        timing_enabled,
+        format!("enter load_schema pointers={pointers:?}"),
+    );
     if pointers.is_empty() {
         anyhow::bail!("load_schema: empty schema pointers");
     }
@@ -37,9 +41,11 @@ pub async fn load_schema_with_timing(
             .unwrap_or_default();
 
         match ext.as_str() {
-            "json" => load_introspection_json(&path),
-            "graphql" | "gql" | "graphqls" => load_schema_graphql_file_loader(&path).await,
-            "js" | "cjs" | "mjs" => load_schema_js(&path).await,
+            "json" => load_introspection_json(&path, timing_enabled),
+            "graphql" | "gql" | "graphqls" => {
+                load_schema_graphql_file_loader(&path, timing_enabled).await
+            }
+            "js" | "cjs" | "mjs" => load_schema_js(&path, timing_enabled).await,
             _ => anyhow::bail!(
                 "Unsupported schema file for {} (expected .json, .graphql, or .js)",
                 path.display()
@@ -64,6 +70,7 @@ async fn load_schema_graphql_pointers(
     for pointer in pointers {
         let pointer = pointer.strip_prefix("./").unwrap_or(pointer);
         if pointer_needs_glob_walk(pointer) {
+            debug_event(timing_enabled, format!("starting schema glob `{pointer}`"));
             let glob_started = Instant::now();
             let before = files.len();
             let walker = GlobWalkerBuilder::from_patterns(cwd, &[pointer])
@@ -108,6 +115,10 @@ async fn load_schema_graphql_pointers(
 
     let mut sdl = String::new();
     for file in files {
+        debug_event(
+            timing_enabled,
+            format!("starting schema file read {}", file.display()),
+        );
         let read_started = Instant::now();
         let text = tokio::fs::read_to_string(&file)
             .await
@@ -122,7 +133,7 @@ async fn load_schema_graphql_pointers(
         }
         sdl.push_str(&text);
     }
-    load_schema_graphql_sdl(&sdl, cwd).await
+    load_schema_graphql_sdl(&sdl, cwd, timing_enabled).await
 }
 
 fn is_graphql_document(path: &Path) -> bool {
@@ -228,6 +239,19 @@ async fn load_documents_for_pointers(
     for pat in include {
         let pat_norm = pat.strip_prefix("./").unwrap_or(&pat).to_string();
 
+        if pointer_might_be_inline_graphql(&pat_norm) {
+            debug_event(
+                timing_enabled,
+                format!("{doc_type} treating pointer as inline GraphQL"),
+            );
+            inline_graphql.push(pat);
+            continue;
+        }
+
+        debug_event(
+            timing_enabled,
+            format!("{doc_type} starting document glob `{pat_norm}`"),
+        );
         let glob_started = Instant::now();
         let before = files.len();
         let walker = GlobWalkerBuilder::from_patterns(cwd, &[pat_norm.as_str()])
@@ -266,6 +290,10 @@ async fn load_documents_for_pointers(
         for ex in exclude {
             let ex = ex.strip_prefix("./").unwrap_or(&ex).to_string();
             if pointer_needs_glob_walk(&ex) {
+                debug_event(
+                    timing_enabled,
+                    format!("{doc_type} starting ignore glob `{ex}`"),
+                );
                 let exclude_started = Instant::now();
                 let before = excluded.len();
                 let walker = GlobWalkerBuilder::from_patterns(cwd, &[ex.as_str()])
@@ -304,6 +332,10 @@ async fn load_documents_for_pointers(
 
     let mut out: Vec<DocumentFile> = Vec::with_capacity(files.len() + inline_graphql.len());
     for path in files {
+        debug_event(
+            timing_enabled,
+            format!("{doc_type} starting document read {}", path.display()),
+        );
         let read_started = Instant::now();
         let text = tokio::fs::read_to_string(&path)
             .await
@@ -315,6 +347,13 @@ async fn load_documents_for_pointers(
         );
 
         let collect_started = Instant::now();
+        debug_event(
+            timing_enabled,
+            format!(
+                "{doc_type} starting GraphQL source collection {}",
+                path.display()
+            ),
+        );
         let sources = if is_graphql_document(&path) {
             vec![text]
         } else {
@@ -335,6 +374,10 @@ async fn load_documents_for_pointers(
             // to `'static` for storage in `DocumentFile` (mirrors upstream's owned `DocumentNode`).
             let text: &'static str = Box::leak(source.into_boxed_str());
 
+            debug_event(
+                timing_enabled,
+                format!("{doc_type} starting document parse {}", path.display()),
+            );
             let parse_started = Instant::now();
             let document = graphql_parser::parse_query::<String>(text)
                 .with_context(|| format!("failed to parse GraphQL document {}", path.display()))?;
@@ -354,6 +397,10 @@ async fn load_documents_for_pointers(
 
     for src in inline_graphql {
         let text: &'static str = Box::leak(src.into_boxed_str());
+        debug_event(
+            timing_enabled,
+            format!("{doc_type} starting inline GraphQL parse"),
+        );
         let parse_started = Instant::now();
         let document = graphql_parser::parse_query::<String>(text)
             .with_context(|| format!("failed to parse inline GraphQL document `{text}`"))?;
@@ -410,9 +457,17 @@ fn resolve_path(cwd: &Path, p: &str) -> PathBuf {
     }
 }
 
-fn load_introspection_json(path: &Path) -> Result<SchemaGenerationInput> {
+fn load_introspection_json(path: &Path, timing_enabled: bool) -> Result<SchemaGenerationInput> {
+    debug_event(
+        timing_enabled,
+        format!("starting schema JSON read {}", path.display()),
+    );
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read schema JSON {}", path.display()))?;
+    debug_event(
+        timing_enabled,
+        format!("starting schema JSON parse {}", path.display()),
+    );
     let v: Value = serde_json::from_str(&text).context("failed to parse schema JSON")?;
     let introspection = extract_introspection_schema(&v).with_context(|| {
         format!(
@@ -434,11 +489,15 @@ fn extract_introspection_schema(v: &Value) -> Option<Value> {
 
 /// Loads a JS/CJS module that exports a `GraphQLSchema` (same shapes as `@graphql-tools/code-file-loader`).
 /// Requires `graphql` to be resolvable from the schema file’s execution context (`node_modules`).
-async fn load_schema_js(path: &Path) -> Result<SchemaGenerationInput> {
+async fn load_schema_js(path: &Path, timing_enabled: bool) -> Result<SchemaGenerationInput> {
     let abs = path
         .canonicalize()
         .with_context(|| format!("schema file not found: {}", path.display()))?;
 
+    debug_event(
+        timing_enabled,
+        format!("starting JS schema loader node process {}", abs.display()),
+    );
     let output = tokio::process::Command::new("node")
         .current_dir(
             abs.parent()
@@ -461,6 +520,10 @@ async fn load_schema_js(path: &Path) -> Result<SchemaGenerationInput> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    debug_event(
+        timing_enabled,
+        format!("starting JS schema loader JSON parse {}", abs.display()),
+    );
     let parsed: Value =
         serde_json::from_str(stdout.trim()).context("failed to parse schema loader JSON")?;
 
@@ -488,10 +551,17 @@ async fn load_schema_js(path: &Path) -> Result<SchemaGenerationInput> {
 ///
 /// Implementation note: upstream uses `@graphql-tools/load` + `GraphQLFileLoader`. We shell out to
 /// Node with `graphql`'s `buildSchema` for now.
-async fn load_schema_graphql_file_loader(path: &Path) -> Result<SchemaGenerationInput> {
+async fn load_schema_graphql_file_loader(
+    path: &Path,
+    timing_enabled: bool,
+) -> Result<SchemaGenerationInput> {
     let abs = path
         .canonicalize()
         .with_context(|| format!("schema file not found: {}", path.display()))?;
+    debug_event(
+        timing_enabled,
+        format!("starting SDL schema read {}", abs.display()),
+    );
     let sdl = tokio::fs::read_to_string(&abs)
         .await
         .with_context(|| format!("failed to read schema {}", abs.display()))?;
@@ -499,11 +569,24 @@ async fn load_schema_graphql_file_loader(path: &Path) -> Result<SchemaGeneration
         &sdl,
         abs.parent()
             .context("schema path has no parent directory")?,
+        timing_enabled,
     )
     .await
 }
 
-async fn load_schema_graphql_sdl(sdl: &str, cwd: &Path) -> Result<SchemaGenerationInput> {
+async fn load_schema_graphql_sdl(
+    sdl: &str,
+    cwd: &Path,
+    timing_enabled: bool,
+) -> Result<SchemaGenerationInput> {
+    debug_event(
+        timing_enabled,
+        format!(
+            "starting SDL schema loader node process in {} ({} bytes)",
+            cwd.display(),
+            sdl.len()
+        ),
+    );
     let output = tokio::process::Command::new("node")
         .current_dir(cwd)
         .env("CODEGEN_SCHEMA_SDL", sdl)
@@ -519,6 +602,7 @@ async fn load_schema_graphql_sdl(sdl: &str, cwd: &Path) -> Result<SchemaGenerati
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    debug_event(timing_enabled, "starting SDL schema loader JSON parse");
     let parsed: Value =
         serde_json::from_str(stdout.trim()).context("failed to parse SDL schema loader JSON")?;
 

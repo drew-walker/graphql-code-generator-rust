@@ -10,6 +10,12 @@ pub fn debug_log_if(enabled: bool, message: impl AsRef<str>) {
     }
 }
 
+pub fn debug_event(enabled: bool, message: impl AsRef<str>) {
+    if enabled {
+        eprintln!("[codegen:debug] {}", message.as_ref());
+    }
+}
+
 pub fn timing_enabled_from_env() -> bool {
     std::env::var_os("CODEGEN_TIMING").is_some()
         || std::env::var_os("DEBUG").is_some()
