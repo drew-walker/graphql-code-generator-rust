@@ -1,4 +1,6 @@
-//! Mirrors `packages/graphql-codegen-cli/src/load.ts` — schema loading only for now.
+//! Mirrors `~/Projects/graphql-code-generator/packages/graphql-codegen-cli/src/load.ts`
+//! (`loadSchema` / `loadDocuments`). Schema from JSON, SDL (via Node), or JS; documents from globs
+//! or inline GraphQL strings (same as upstream `loadDocuments` + `@graphql-tools/load`).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -49,6 +51,17 @@ fn is_graphql_document(path: &Path) -> bool {
     ext == "graphql" || ext == "gql"
 }
 
+/// When a `documents` entry is a raw GraphQL string (as in `~/Projects/graphql-code-generator`
+/// `dev-test/codegen.ts` → `documents: ['query test { ... }']`), globs match no files. Upstream
+/// `@graphql-tools/load` still parses these; we detect the same case after an empty glob walk.
+fn pointer_might_be_inline_graphql(pointer: &str) -> bool {
+    let s = pointer.trim_start_matches("./").trim_start();
+    let Some(first) = s.split_whitespace().next() else {
+        return false;
+    };
+    matches!(first, "query" | "mutation" | "subscription" | "fragment")
+}
+
 async fn load_documents_for_pointers(
     cwd: &Path,
     pointers: &[String],
@@ -71,21 +84,28 @@ async fn load_documents_for_pointers(
     }
 
     let mut files: Vec<PathBuf> = Vec::new();
+    let mut inline_graphql: Vec<String> = Vec::new();
     for pat in include {
-        let pat = pat.strip_prefix("./").unwrap_or(&pat).to_string();
+        let pat_norm = pat.strip_prefix("./").unwrap_or(&pat).to_string();
 
-        let walker = GlobWalkerBuilder::from_patterns(cwd, &[pat.as_str()])
+        let walker = GlobWalkerBuilder::from_patterns(cwd, &[pat_norm.as_str()])
             .follow_links(true)
             .file_type(globwalk::FileType::FILE)
             .build()
             .with_context(|| format!("failed to build glob walker for document pointer `{pat}`"))?;
 
+        let mut matched_file = false;
         for entry in walker.into_iter().flatten() {
             let path = entry.path().to_path_buf();
             if !is_graphql_document(&path) {
                 continue;
             }
             files.push(path);
+            matched_file = true;
+        }
+
+        if !matched_file && pointer_might_be_inline_graphql(&pat_norm) {
+            inline_graphql.push(pat);
         }
     }
 
@@ -113,7 +133,7 @@ async fn load_documents_for_pointers(
     files.sort();
     files.dedup();
 
-    let mut out: Vec<DocumentFile> = Vec::with_capacity(files.len());
+    let mut out: Vec<DocumentFile> = Vec::with_capacity(files.len() + inline_graphql.len());
     for path in files {
         let text = tokio::fs::read_to_string(&path)
             .await
@@ -128,6 +148,17 @@ async fn load_documents_for_pointers(
 
         out.push(DocumentFile {
             location: path.to_string_lossy().to_string(),
+            document,
+            r#type: Some(doc_type.to_string()),
+        });
+    }
+
+    for src in inline_graphql {
+        let text: &'static str = Box::leak(src.into_boxed_str());
+        let document = graphql_parser::parse_query::<String>(text)
+            .with_context(|| format!("failed to parse inline GraphQL document `{text}`"))?;
+        out.push(DocumentFile {
+            location: "<inline>".to_string(),
             document,
             r#type: Some(doc_type.to_string()),
         });

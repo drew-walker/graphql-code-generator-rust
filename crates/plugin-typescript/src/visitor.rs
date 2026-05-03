@@ -379,11 +379,16 @@ impl<'a> TsVisitor<'a> {
                             arg_type,
                             self.config.immutable_types,
                         );
-                        let arg_q = if arg_optional && !self.config.avoid_optionals {
-                            "?"
-                        } else {
-                            ""
-                        };
+                        // Mirrors upstream `avoidOptionals` + `InputValueDefinition`: optional args omit
+                        // `?` when `avoidOptionals.inputValue` is true, except when the argument has a
+                        // default value (`unit` on `height` / `length` in Star Wars fixtures).
+                        let arg_has_default = arg.get("defaultValue").is_some_and(|v| !v.is_null());
+                        let arg_q =
+                            if arg_optional && (!self.config.avoid_optionals || arg_has_default) {
+                                "?"
+                            } else {
+                                ""
+                            };
                         args_block.push_str(&format!("  {arg_name}{arg_q}: {arg_ts};\n"));
                     }
                     args_block.push_str("};\n\n");
@@ -480,7 +485,9 @@ impl<'a> TsVisitor<'a> {
                     let arg_type = arg.get("type").context("arg without type")?;
                     let (arg_optional, arg_ts) =
                         graphql_input_field_type_to_ts_field(arg_type, self.config.immutable_types);
-                    let arg_q = if arg_optional && !self.config.avoid_optionals {
+                    let arg_has_default = arg.get("defaultValue").is_some_and(|v| !v.is_null());
+                    let arg_q = if arg_optional && (!self.config.avoid_optionals || arg_has_default)
+                    {
                         "?"
                     } else {
                         ""

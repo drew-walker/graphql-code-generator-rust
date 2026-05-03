@@ -97,7 +97,11 @@ fn output_ts(
         "Array"
     };
     match type_ref {
-        TypeRef::NonNull(inner) => output_ts(inner, base_ts_for_named, immutable_types),
+        // `String!` must become `string`, not `string | null` (e.g. `[String!]!` → `Array<string>`).
+        TypeRef::NonNull(inner) => match inner.as_ref() {
+            TypeRef::Named(name) => output_ts_nonnull(name, base_ts_for_named),
+            _ => output_ts(inner, base_ts_for_named, immutable_types),
+        },
         TypeRef::List(inner) => Ok(format!(
             "{array_ty}<{}>",
             output_ts(inner, base_ts_for_named, immutable_types)?

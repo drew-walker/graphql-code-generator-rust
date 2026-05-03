@@ -143,7 +143,12 @@ pub(crate) fn collect_selections_into(
                         optional = true;
                     }
                     if ctx.seen_primitive.insert(out_name.clone()) {
-                        let q = if optional && !v.config.avoid_optionals {
+                        // Mirrors upstream `formatNamedField`: `@include` / `@skip` keep `?` even when
+                        // `avoidOptionals.field` is true.
+                        let q = if optional
+                            && (!v.config.avoid_optionals
+                                || has_conditional_directives(&f.directives))
+                        {
                             "?"
                         } else {
                             ""
