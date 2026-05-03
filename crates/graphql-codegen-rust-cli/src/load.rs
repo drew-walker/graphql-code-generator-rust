@@ -5,7 +5,7 @@
 use anyhow::{Context as _, Result};
 use apollo_compiler::Schema as ApolloSchema;
 use apollo_compiler::parser::Parser;
-use globwalk::GlobWalkerBuilder;
+use glob::glob;
 use graphql_parser::schema::{
     Definition as SchemaDefinitionAst, Document as SchemaDocument, EnumType, EnumTypeExtension,
     Field, InputObjectType, InputObjectTypeExtension, InputValue, InterfaceType,
@@ -78,26 +78,14 @@ async fn load_schema_graphql_pointers(
     for pointer in pointers {
         let pointer = pointer.strip_prefix("./").unwrap_or(pointer);
         if pointer_needs_glob_walk(pointer) {
-            let glob = glob_root_and_pattern(cwd, pointer);
+            let patterns = expand_glob_pattern_strings(cwd, pointer);
             debug_event(
                 timing_enabled,
-                format!(
-                    "starting schema glob `{pointer}` from {} with pattern `{}`",
-                    glob.root.display(),
-                    glob.pattern
-                ),
+                format!("starting schema glob `{pointer}` → {patterns:?}"),
             );
             let glob_started = Instant::now();
             let before = files.len();
-            let walker = GlobWalkerBuilder::from_patterns(&glob.root, &[glob.pattern.as_str()])
-                .follow_links(true)
-                .file_type(globwalk::FileType::FILE)
-                .build()
-                .with_context(|| {
-                    format!("failed to build glob walker for schema pointer `{pointer}`")
-                })?;
-            for entry in walker.into_iter().flatten() {
-                let path = normalize_glob_entry_path(&glob.root, entry.path());
+            for path in expand_glob_matched_paths(&patterns, "schema")? {
                 let ext = path
                     .extension()
                     .and_then(|e| e.to_str())
@@ -191,73 +179,96 @@ fn pluck_graphql_sources(text: &str) -> Vec<String> {
 /// When a `documents` entry is a raw GraphQL string (as in `graphql-code-generator`
 /// `dev-test/codegen.ts` → `documents: ['query test { ... }']`), globs match no files. Upstream
 /// `@graphql-tools/load` still parses these; we detect the same case after an empty glob walk.
-/// True when the pointer needs a filesystem glob walk (`globwalk`).
+/// True when the pointer needs a filesystem glob expansion.
 ///
 /// Upstream passes `ignore` from `load.ts` into `@graphql-tools/load` as filesystem paths (see
 /// `join(config.cwd, generatePath)`). Those are almost always **literal** output paths, not globs.
-/// Feeding a literal through `GlobWalkerBuilder` is both slow (wide tree walks) and can diverge
-/// from toolkit matching; we only glob-walk when the string contains glob metacharacters (same
-/// idea as negated document globs like `!./foo/**/*.graphql`).
+/// We only run the glob engine when the string contains glob metacharacters (same idea as
+/// negated document globs like `!./foo/**/*.graphql`).
 fn pointer_needs_glob_walk(pointer: &str) -> bool {
     pointer
         .chars()
         .any(|c| matches!(c, '*' | '?' | '[' | ']' | '{' | '}'))
 }
 
-struct GlobPointer {
-    root: PathBuf,
-    pattern: String,
-}
-
-fn glob_root_and_pattern(cwd: &Path, pointer: &str) -> GlobPointer {
+/// One absolute glob pattern string per [`glob::glob`] call (POSIX shell semantics: `*` never
+/// matches `/`; `glob::glob_with` forces that). Micromatch-style `{a,b}` in the **last** path
+/// segment is expanded into several patterns (e.g. `**/*.{graphql,gql}`).
+fn expand_glob_pattern_strings(cwd: &Path, pointer: &str) -> Vec<String> {
     let pointer = pointer.strip_prefix("./").unwrap_or(pointer);
-    let Some(first_glob_idx) = pointer
-        .char_indices()
-        .find_map(|(idx, c)| matches!(c, '*' | '?' | '[' | ']' | '{' | '}').then_some(idx))
-    else {
-        return GlobPointer {
-            root: cwd.to_path_buf(),
-            pattern: pointer.to_string(),
-        };
-    };
-
-    let literal_prefix = &pointer[..first_glob_idx];
-    let Some(separator_idx) = literal_prefix.rfind('/') else {
-        return GlobPointer {
-            root: cwd.to_path_buf(),
-            pattern: pointer.to_string(),
-        };
-    };
-
-    let (root_part, pattern) = if separator_idx == 0 && pointer.starts_with('/') {
-        ("/", &pointer[1..])
+    if let Some(alts) = expand_brace_alternatives_in_last_segment(pointer) {
+        alts.into_iter()
+            .map(|p| glob_pattern_string(cwd, &p))
+            .collect()
     } else {
-        (&pointer[..separator_idx], &pointer[separator_idx + 1..])
-    };
-
-    let root = if root_part.is_empty() {
-        cwd.to_path_buf()
-    } else {
-        let root = Path::new(root_part);
-        if root.is_absolute() {
-            root.to_path_buf()
-        } else {
-            cwd.join(root)
-        }
-    };
-
-    GlobPointer {
-        root,
-        pattern: pattern.to_string(),
+        vec![glob_pattern_string(cwd, pointer)]
     }
 }
 
-fn normalize_glob_entry_path(root: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        root.join(path)
+fn expand_brace_alternatives_in_last_segment(pointer: &str) -> Option<Vec<String>> {
+    let last_start = pointer.rfind('/').map(|i| i + 1).unwrap_or(0);
+    let last_seg = pointer.get(last_start..)?;
+    let open = last_seg.find('{')?;
+    let close = last_seg.rfind('}')?;
+    if close <= open + 1 {
+        return None;
     }
+    let inner = &last_seg[open + 1..close];
+    if inner.contains(['{', '}']) {
+        return None;
+    }
+    let opts: Vec<_> = inner
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    if opts.len() < 2 {
+        return None;
+    }
+    let prefix = pointer.get(..last_start + open)?;
+    let suffix = last_seg.get(close + 1..).unwrap_or("");
+    Some(
+        opts.into_iter()
+            .map(|o| format!("{prefix}{o}{suffix}"))
+            .collect(),
+    )
+}
+
+fn glob_pattern_string(cwd: &Path, pointer: &str) -> String {
+    let path = if Path::new(pointer).is_absolute() {
+        PathBuf::from(pointer)
+    } else {
+        cwd.join(pointer)
+    };
+    path_to_posix_glob_string(&path)
+}
+
+fn path_to_posix_glob_string(path: &Path) -> String {
+    let s = path.to_string_lossy();
+    #[cfg(windows)]
+    {
+        s.replace('\\', "/")
+    }
+    #[cfg(not(windows))]
+    {
+        s.into_owned()
+    }
+}
+
+fn expand_glob_matched_paths(patterns: &[String], ctx: &str) -> Result<Vec<PathBuf>> {
+    let mut merged = Vec::new();
+    for pattern in patterns {
+        let iter = glob(pattern).with_context(|| format!("invalid {ctx} glob `{pattern}`"))?;
+        for entry in iter {
+            let path = entry.with_context(|| format!("{ctx} glob iteration on `{pattern}`"))?;
+            if path.is_file() {
+                merged.push(path);
+            }
+        }
+    }
+    merged.sort();
+    merged.dedup();
+    Ok(merged)
 }
 
 fn add_excluded_path(set: &mut HashSet<PathBuf>, path: PathBuf) {
@@ -338,26 +349,16 @@ async fn load_documents_for_pointers(
             timing_enabled,
             format!("{doc_type} preparing document glob `{pat_norm}`"),
         );
-        let glob = glob_root_and_pattern(cwd, &pat_norm);
+        let patterns = expand_glob_pattern_strings(cwd, &pat_norm);
         debug_event(
             timing_enabled,
-            format!(
-                "{doc_type} starting document glob `{pat_norm}` from {} with pattern `{}`",
-                glob.root.display(),
-                glob.pattern
-            ),
+            format!("{doc_type} starting document glob `{pat_norm}` → {patterns:?}",),
         );
         let glob_started = Instant::now();
         let before = files.len();
-        let walker = GlobWalkerBuilder::from_patterns(&glob.root, &[glob.pattern.as_str()])
-            .follow_links(true)
-            .file_type(globwalk::FileType::FILE)
-            .build()
-            .with_context(|| format!("failed to build glob walker for document pointer `{pat}`"))?;
 
         let mut matched_file = false;
-        for entry in walker.into_iter().flatten() {
-            let path = normalize_glob_entry_path(&glob.root, entry.path());
+        for path in expand_glob_matched_paths(&patterns, doc_type)? {
             if !is_graphql_document(&path) && !is_code_document(&path) {
                 continue;
             }
@@ -385,29 +386,15 @@ async fn load_documents_for_pointers(
         for ex in exclude {
             let ex = ex.strip_prefix("./").unwrap_or(&ex).to_string();
             if pointer_needs_glob_walk(&ex) {
-                let glob = glob_root_and_pattern(cwd, &ex);
+                let patterns = expand_glob_pattern_strings(cwd, &ex);
                 debug_event(
                     timing_enabled,
-                    format!(
-                        "{doc_type} starting ignore glob `{ex}` from {} with pattern `{}`",
-                        glob.root.display(),
-                        glob.pattern
-                    ),
+                    format!("{doc_type} starting ignore glob `{ex}` → {patterns:?}",),
                 );
                 let exclude_started = Instant::now();
                 let before = excluded.len();
-                let walker = GlobWalkerBuilder::from_patterns(&glob.root, &[glob.pattern.as_str()])
-                    .follow_links(true)
-                    .file_type(globwalk::FileType::FILE)
-                    .build()
-                    .with_context(|| {
-                        format!("failed to build glob walker for ignore pointer `{ex}`")
-                    })?;
-                for entry in walker.into_iter().flatten() {
-                    add_excluded_path(
-                        &mut excluded,
-                        normalize_glob_entry_path(&glob.root, entry.path()),
-                    );
+                for path in expand_glob_matched_paths(&patterns, "ignore")? {
+                    add_excluded_path(&mut excluded, path);
                 }
                 debug_timing(
                     timing_enabled,
@@ -1310,7 +1297,8 @@ process.stdout.write(JSON.stringify({ __schema: intro.__schema, enumInternalValu
 #[cfg(test)]
 mod tests {
     use super::{
-        glob_root_and_pattern, load_schema_graphql_files, normalize_orphan_schema_extensions,
+        expand_brace_alternatives_in_last_segment, expand_glob_matched_paths,
+        expand_glob_pattern_strings, load_schema_graphql_files, normalize_orphan_schema_extensions,
         pointer_might_be_inline_graphql,
     };
     use std::path::{Path, PathBuf};
@@ -1357,24 +1345,34 @@ extend type User {
     }
 
     #[test]
-    fn glob_root_and_pattern_splits_relative_glob_at_literal_prefix() {
-        let glob = glob_root_and_pattern(Path::new("/repo"), "src/**/*.graphql");
-        assert_eq!(glob.root, Path::new("/repo/src"));
-        assert_eq!(glob.pattern, "**/*.graphql");
+    fn expand_glob_pattern_strings_joins_cwd_and_preserves_double_star() {
+        let pats = expand_glob_pattern_strings(Path::new("/repo"), "src/**/*.graphql");
+        assert_eq!(pats.len(), 1);
+        let n = pats[0].replace('\\', "/");
+        assert!(n.ends_with("repo/src/**/*.graphql"), "got {n:?}");
     }
 
     #[test]
-    fn glob_root_and_pattern_splits_absolute_glob_at_literal_prefix() {
-        let glob = glob_root_and_pattern(Path::new("/repo"), "/Users/dwalker/app/src/*.graphqls");
-        assert_eq!(glob.root, Path::new("/Users/dwalker/app/src"));
-        assert_eq!(glob.pattern, "*.graphqls");
+    fn expand_brace_splits_micromatch_style_last_segment() {
+        assert_eq!(
+            expand_brace_alternatives_in_last_segment("a/**/*.{graphql,gql}"),
+            Some(vec!["a/**/*.graphql".to_string(), "a/**/*.gql".to_string(),])
+        );
     }
 
     #[test]
-    fn glob_root_and_pattern_keeps_cwd_for_glob_without_literal_directory() {
-        let glob = glob_root_and_pattern(Path::new("/repo"), "**/*.graphql");
-        assert_eq!(glob.root, Path::new("/repo"));
-        assert_eq!(glob.pattern, "**/*.graphql");
+    fn expand_glob_single_star_does_not_cross_slash() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!("graphql_codegen_glob_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("__tests__")).unwrap();
+        fs::write(dir.join("root.graphqls"), "scalar S").unwrap();
+        fs::write(dir.join("__tests__/nested.graphqls"), "scalar T").unwrap();
+        let patterns = expand_glob_pattern_strings(&dir, "*.graphqls");
+        let paths = expand_glob_matched_paths(&patterns, "test").unwrap();
+        assert_eq!(paths.len(), 1);
+        assert!(paths[0].ends_with("root.graphqls"));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// Concatenating these into one SDL makes apollo-compiler reject a duplicate `AccountStatus`

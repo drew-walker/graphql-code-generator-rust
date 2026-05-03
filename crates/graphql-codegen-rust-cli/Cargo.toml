@@ -16,7 +16,7 @@ ureq = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 sha1 = { workspace = true }
 base64 = { workspace = true }
-globwalk = { workspace = true }
+glob = { workspace = true }
 graphql-parser = { workspace = true }
 dotenvy = { workspace = true }
 plugin-helpers = { path = "../plugin-helpers" }
