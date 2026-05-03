@@ -682,12 +682,22 @@ fn load_schema_graphql_sdl(sdl: &str, timing_enabled: bool) -> Result<SchemaGene
 /// Concatenating files into one string and calling [`ApolloSchema::parse`] makes the compiler
 /// treat duplicate type names as collisions in a single document; upstream `@graphql-tools/load`
 /// merges across files instead.
+///
+/// We do **not** run [`normalize_orphan_schema_extensions_pass2`] here: that pass promotes
+/// orphan `extend type Foo` to `type Foo` when `Foo` is missing from a global name set. Across
+/// multiple files, `Foo` is often defined in a later file while an earlier file only extends it;
+/// promoting the extension first produces a second `type Foo` when the real definition is parsed,
+/// which apollo rejects (`Query` defined multiple times). [`Parser::parse_into_schema_builder`]
+/// already keeps orphan extensions until the base type appears.
 fn load_schema_graphql_files(
     files: &[(PathBuf, String)],
     timing_enabled: bool,
 ) -> Result<SchemaGenerationInput> {
     if files.is_empty() {
         anyhow::bail!("load_schema_graphql_files: empty file list");
+    }
+    if files.len() == 1 {
+        return load_schema_graphql_sdl(&files[0].1, timing_enabled);
     }
     let total_bytes: usize = files.iter().map(|(_, s)| s.len()).sum();
     debug_event(
@@ -699,19 +709,11 @@ fn load_schema_graphql_files(
         ),
     );
 
-    let mut defined = HashSet::new();
-    for (_, raw) in files {
-        defined.extend(collect_schema_definition_type_names(
-            &strip_schema_extensions(raw),
-        ));
-    }
-
     let mut builder = ApolloSchema::builder();
     let mut parser = Parser::new();
     for (path, raw) in files {
         let stripped = strip_schema_extensions(raw);
-        let normalized = normalize_orphan_schema_extensions_pass2(&stripped, &mut defined);
-        parser.parse_into_schema_builder(normalized, path, &mut builder);
+        parser.parse_into_schema_builder(stripped, path, &mut builder);
     }
 
     let apollo_schema = builder
@@ -1403,5 +1405,35 @@ extend type User {
             .collect();
         assert!(names.contains(&"OPEN"));
         assert!(names.contains(&"CLOSED"));
+    }
+
+    /// Orphan `extend type Query` in an earlier file must not be promoted to `type Query` when the
+    /// base `type Query` lives in a later file (would duplicate `Query` in apollo-compiler).
+    #[test]
+    fn load_schema_graphql_files_extend_root_type_before_base_definition() {
+        let files = vec![
+            (
+                PathBuf::from("extensions.graphql"),
+                "extend type Query { ext: String }\n".to_string(),
+            ),
+            (
+                PathBuf::from("root.graphql"),
+                "type Query { root: Int }\n".to_string(),
+            ),
+        ];
+        let out = load_schema_graphql_files(&files, false).expect("merged schema");
+        let types = out.introspection["types"].as_array().expect("types");
+        let query = types
+            .iter()
+            .find(|t| t["name"] == "Query")
+            .expect("Query type");
+        let names: Vec<_> = query["fields"]
+            .as_array()
+            .expect("fields")
+            .iter()
+            .map(|f| f["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"ext"));
+        assert!(names.contains(&"root"));
     }
 }
