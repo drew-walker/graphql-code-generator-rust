@@ -5,7 +5,7 @@
 use anyhow::{Context as _, Result};
 use apollo_compiler::Schema as ApolloSchema;
 use apollo_compiler::parser::Parser;
-use glob::glob;
+use globwalk::GlobWalkerBuilder;
 use graphql_parser::schema::{
     Definition as SchemaDefinitionAst, Document as SchemaDocument, EnumType, EnumTypeExtension,
     Field, InputObjectType, InputObjectTypeExtension, InputValue, InterfaceType,
@@ -78,14 +78,20 @@ async fn load_schema_graphql_pointers(
     for pointer in pointers {
         let pointer = pointer.strip_prefix("./").unwrap_or(pointer);
         if pointer_needs_glob_walk(pointer) {
-            let patterns = expand_glob_pattern_strings(cwd, pointer);
+            let globs = expand_glob_split_pointers(cwd, pointer);
             debug_event(
                 timing_enabled,
-                format!("starting schema glob `{pointer}` → {patterns:?}"),
+                format!(
+                    "starting schema glob `{pointer}` → {:?}",
+                    globs
+                        .iter()
+                        .map(|g| (g.root.display().to_string(), g.pattern.clone()))
+                        .collect::<Vec<_>>()
+                ),
             );
             let glob_started = Instant::now();
             let before = files.len();
-            for path in expand_glob_matched_paths(&patterns, "schema")? {
+            for path in expand_globwalk_matches(&globs, "schema", true)? {
                 let ext = path
                     .extension()
                     .and_then(|e| e.to_str())
@@ -191,17 +197,23 @@ fn pointer_needs_glob_walk(pointer: &str) -> bool {
         .any(|c| matches!(c, '*' | '?' | '[' | ']' | '{' | '}'))
 }
 
-/// One absolute glob pattern string per [`glob::glob`] call (POSIX shell semantics: `*` never
-/// matches `/`; `glob::glob_with` forces that). Micromatch-style `{a,b}` in the **last** path
-/// segment is expanded into several patterns (e.g. `**/*.{graphql,gql}`).
-fn expand_glob_pattern_strings(cwd: &Path, pointer: &str) -> Vec<String> {
+struct GlobPointer {
+    root: PathBuf,
+    pattern: String,
+}
+
+/// Micromatch-style `{a,b}` in the **last** path segment (e.g. `**/*.{graphql,gql}`) becomes
+/// several [`GlobPointer`] values. Filesystem matching uses [`globwalk`] scoped to the literal
+/// prefix before the first glob metacharacter (fast on large repos). Patterns without `**` also
+/// use [`glob_path_matches_fixed_depth`] so `src/*.graphqls` does not match `src/__tests__/x`.
+fn expand_glob_split_pointers(cwd: &Path, pointer: &str) -> Vec<GlobPointer> {
     let pointer = pointer.strip_prefix("./").unwrap_or(pointer);
     if let Some(alts) = expand_brace_alternatives_in_last_segment(pointer) {
         alts.into_iter()
-            .map(|p| glob_pattern_string(cwd, &p))
+            .map(|p| glob_root_and_pattern(cwd, &p))
             .collect()
     } else {
-        vec![glob_pattern_string(cwd, pointer)]
+        vec![glob_root_and_pattern(cwd, pointer)]
     }
 }
 
@@ -234,33 +246,114 @@ fn expand_brace_alternatives_in_last_segment(pointer: &str) -> Option<Vec<String
     )
 }
 
-fn glob_pattern_string(cwd: &Path, pointer: &str) -> String {
-    let path = if Path::new(pointer).is_absolute() {
-        PathBuf::from(pointer)
-    } else {
-        cwd.join(pointer)
+fn glob_root_and_pattern(cwd: &Path, pointer: &str) -> GlobPointer {
+    let pointer = pointer.strip_prefix("./").unwrap_or(pointer);
+    let Some(first_glob_idx) = pointer
+        .char_indices()
+        .find_map(|(idx, c)| matches!(c, '*' | '?' | '[' | ']' | '{' | '}').then_some(idx))
+    else {
+        return GlobPointer {
+            root: cwd.to_path_buf(),
+            pattern: pointer.to_string(),
+        };
     };
-    path_to_posix_glob_string(&path)
+
+    let literal_prefix = &pointer[..first_glob_idx];
+    let Some(separator_idx) = literal_prefix.rfind('/') else {
+        return GlobPointer {
+            root: cwd.to_path_buf(),
+            pattern: pointer.to_string(),
+        };
+    };
+
+    let (root_part, pattern) = if separator_idx == 0 && pointer.starts_with('/') {
+        ("/", &pointer[1..])
+    } else {
+        (&pointer[..separator_idx], &pointer[separator_idx + 1..])
+    };
+
+    let root = if root_part.is_empty() {
+        cwd.to_path_buf()
+    } else {
+        let root = Path::new(root_part);
+        if root.is_absolute() {
+            root.to_path_buf()
+        } else {
+            cwd.join(root)
+        }
+    };
+
+    GlobPointer {
+        root,
+        pattern: pattern.to_string(),
+    }
 }
 
-fn path_to_posix_glob_string(path: &Path) -> String {
-    let s = path.to_string_lossy();
-    #[cfg(windows)]
-    {
-        s.replace('\\', "/")
-    }
-    #[cfg(not(windows))]
-    {
-        s.into_owned()
+fn normalize_glob_entry_path(root: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
     }
 }
 
-fn expand_glob_matched_paths(patterns: &[String], ctx: &str) -> Result<Vec<PathBuf>> {
+fn glob_fixed_relative_depth(pattern: &str) -> Option<usize> {
+    if pattern.contains("**/") || pattern.starts_with("**") || pattern.ends_with("/**") {
+        return None;
+    }
+    if pattern.contains("**") {
+        return None;
+    }
+    let n = pattern.split('/').filter(|s| !s.is_empty()).count();
+    (n > 0).then_some(n)
+}
+
+fn glob_path_matches_fixed_depth(root: &Path, full_path: &Path, pattern: &str) -> bool {
+    let Some(expected) = glob_fixed_relative_depth(pattern) else {
+        return true;
+    };
+    full_path
+        .strip_prefix(root)
+        .map(|rel| rel.components().count() == expected)
+        .unwrap_or(false)
+}
+
+/// Walk `globs` with [`globwalk`]. `apply_fixed_depth_filter` is for schema pointers like
+/// `src/*.graphqls` so `*` does not match across `/` (see [`glob_path_matches_fixed_depth`]). For
+/// documents we pass `false`: patterns are almost always `**/…`, and depth filtering is inactive
+/// then anyway.
+///
+/// We match **symlink** entries as well as regular files (`pnpm` / `node_modules` are mostly
+/// symlinks; `FILE` alone dropped ~85% of matches). We do **not** follow directory symlinks
+/// (`follow_links(false)`): `follow_links(true)` can thrash or appear hung on circular links and
+/// is not what most tooling does for document discovery.
+fn expand_globwalk_matches(
+    globs: &[GlobPointer],
+    ctx: &str,
+    apply_fixed_depth_filter: bool,
+) -> Result<Vec<PathBuf>> {
     let mut merged = Vec::new();
-    for pattern in patterns {
-        let iter = glob(pattern).with_context(|| format!("invalid {ctx} glob `{pattern}`"))?;
-        for entry in iter {
-            let path = entry.with_context(|| format!("{ctx} glob iteration on `{pattern}`"))?;
+    for glob in globs {
+        let walker = GlobWalkerBuilder::from_patterns(&glob.root, &[glob.pattern.as_str()])
+            .follow_links(false)
+            .file_type(globwalk::FileType::FILE | globwalk::FileType::SYMLINK)
+            .build()
+            .with_context(|| {
+                format!(
+                    "failed to build {ctx} glob walker (root={}, pattern={})",
+                    glob.root.display(),
+                    glob.pattern
+                )
+            })?;
+        for entry in walker {
+            let entry = entry
+                .with_context(|| format!("{ctx} glob walk error under {}", glob.root.display()))?;
+            let path = normalize_glob_entry_path(&glob.root, entry.path());
+            if apply_fixed_depth_filter
+                && !glob_path_matches_fixed_depth(&glob.root, &path, &glob.pattern)
+            {
+                continue;
+            }
             if path.is_file() {
                 merged.push(path);
             }
@@ -349,16 +442,22 @@ async fn load_documents_for_pointers(
             timing_enabled,
             format!("{doc_type} preparing document glob `{pat_norm}`"),
         );
-        let patterns = expand_glob_pattern_strings(cwd, &pat_norm);
+        let globs = expand_glob_split_pointers(cwd, &pat_norm);
         debug_event(
             timing_enabled,
-            format!("{doc_type} starting document glob `{pat_norm}` → {patterns:?}",),
+            format!(
+                "{doc_type} starting document glob `{pat_norm}` → {:?}",
+                globs
+                    .iter()
+                    .map(|g| (g.root.display().to_string(), g.pattern.clone()))
+                    .collect::<Vec<_>>()
+            ),
         );
         let glob_started = Instant::now();
         let before = files.len();
 
         let mut matched_file = false;
-        for path in expand_glob_matched_paths(&patterns, doc_type)? {
+        for path in expand_globwalk_matches(&globs, doc_type, false)? {
             if !is_graphql_document(&path) && !is_code_document(&path) {
                 continue;
             }
@@ -386,14 +485,20 @@ async fn load_documents_for_pointers(
         for ex in exclude {
             let ex = ex.strip_prefix("./").unwrap_or(&ex).to_string();
             if pointer_needs_glob_walk(&ex) {
-                let patterns = expand_glob_pattern_strings(cwd, &ex);
+                let globs = expand_glob_split_pointers(cwd, &ex);
                 debug_event(
                     timing_enabled,
-                    format!("{doc_type} starting ignore glob `{ex}` → {patterns:?}",),
+                    format!(
+                        "{doc_type} starting ignore glob `{ex}` → {:?}",
+                        globs
+                            .iter()
+                            .map(|g| (g.root.display().to_string(), g.pattern.clone()))
+                            .collect::<Vec<_>>()
+                    ),
                 );
                 let exclude_started = Instant::now();
                 let before = excluded.len();
-                for path in expand_glob_matched_paths(&patterns, "ignore")? {
+                for path in expand_globwalk_matches(&globs, "ignore", false)? {
                     add_excluded_path(&mut excluded, path);
                 }
                 debug_timing(
@@ -1299,8 +1404,9 @@ process.stdout.write(JSON.stringify({ __schema: intro.__schema, enumInternalValu
 #[cfg(test)]
 mod tests {
     use super::{
-        expand_brace_alternatives_in_last_segment, expand_glob_matched_paths,
-        expand_glob_pattern_strings, load_schema_graphql_files, normalize_orphan_schema_extensions,
+        expand_brace_alternatives_in_last_segment, expand_glob_split_pointers,
+        expand_globwalk_matches, glob_fixed_relative_depth, glob_path_matches_fixed_depth,
+        glob_root_and_pattern, load_schema_graphql_files, normalize_orphan_schema_extensions,
         pointer_might_be_inline_graphql,
     };
     use std::path::{Path, PathBuf};
@@ -1347,11 +1453,10 @@ extend type User {
     }
 
     #[test]
-    fn expand_glob_pattern_strings_joins_cwd_and_preserves_double_star() {
-        let pats = expand_glob_pattern_strings(Path::new("/repo"), "src/**/*.graphql");
-        assert_eq!(pats.len(), 1);
-        let n = pats[0].replace('\\', "/");
-        assert!(n.ends_with("repo/src/**/*.graphql"), "got {n:?}");
+    fn glob_root_and_pattern_splits_relative_glob_at_literal_prefix() {
+        let g = glob_root_and_pattern(Path::new("/repo"), "src/**/*.graphql");
+        assert_eq!(g.root, Path::new("/repo/src"));
+        assert_eq!(g.pattern, "**/*.graphql");
     }
 
     #[test]
@@ -1363,18 +1468,40 @@ extend type User {
     }
 
     #[test]
-    fn expand_glob_single_star_does_not_cross_slash() {
+    fn glob_fixed_relative_depth_star_suffix_is_one_level() {
+        assert_eq!(glob_fixed_relative_depth("*.graphqls"), Some(1));
+        assert_eq!(glob_fixed_relative_depth("src/*.graphqls"), Some(2));
+        assert_eq!(glob_fixed_relative_depth("**/a.graphql"), None);
+    }
+
+    #[test]
+    fn globwalk_single_star_does_not_match_nested_dir() {
         use std::fs;
         let dir = std::env::temp_dir().join(format!("graphql_codegen_glob_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("__tests__")).unwrap();
         fs::write(dir.join("root.graphqls"), "scalar S").unwrap();
         fs::write(dir.join("__tests__/nested.graphqls"), "scalar T").unwrap();
-        let patterns = expand_glob_pattern_strings(&dir, "*.graphqls");
-        let paths = expand_glob_matched_paths(&patterns, "test").unwrap();
+        let globs = expand_glob_split_pointers(&dir, "*.graphqls");
+        let paths = expand_globwalk_matches(&globs, "test", true).unwrap();
         assert_eq!(paths.len(), 1);
         assert!(paths[0].ends_with("root.graphqls"));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn glob_path_matches_fixed_depth_rejects_nested_for_single_star() {
+        let root = Path::new("/repo/packages/graphql/src");
+        assert!(glob_path_matches_fixed_depth(
+            root,
+            Path::new("/repo/packages/graphql/src/schema.graphqls"),
+            "*.graphqls"
+        ));
+        assert!(!glob_path_matches_fixed_depth(
+            root,
+            Path::new("/repo/packages/graphql/src/__tests__/mockSchema.graphqls"),
+            "*.graphqls"
+        ));
     }
 
     /// Concatenating these into one SDL makes apollo-compiler reject a duplicate `AccountStatus`
