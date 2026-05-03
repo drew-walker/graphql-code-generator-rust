@@ -2,9 +2,8 @@
 //! (`loadSchema` / `loadDocuments`). Schema from JSON, SDL (via Node), or JS; documents from globs
 //! or inline GraphQL strings (same as upstream `loadDocuments` + `@graphql-tools/load`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-
 use anyhow::{Context as _, Result};
 use globwalk::GlobWalkerBuilder;
 use plugin_helpers::schema_input::SchemaGenerationInput;
@@ -54,6 +53,30 @@ fn is_graphql_document(path: &Path) -> bool {
 /// When a `documents` entry is a raw GraphQL string (as in `graphql-code-generator`
 /// `dev-test/codegen.ts` → `documents: ['query test { ... }']`), globs match no files. Upstream
 /// `@graphql-tools/load` still parses these; we detect the same case after an empty glob walk.
+/// True when the pointer needs a filesystem glob walk (`globwalk`).
+///
+/// Upstream passes `ignore` from `load.ts` into `@graphql-tools/load` as filesystem paths (see
+/// `join(config.cwd, generatePath)`). Those are almost always **literal** output paths, not globs.
+/// Feeding a literal through `GlobWalkerBuilder` is both slow (wide tree walks) and can diverge
+/// from toolkit matching; we only glob-walk when the string contains glob metacharacters (same
+/// idea as negated document globs like `!./foo/**/*.graphql`).
+fn pointer_needs_glob_walk(pointer: &str) -> bool {
+    pointer
+        .chars()
+        .any(|c| matches!(c, '*' | '?' | '[' | ']' | '{' | '}'))
+}
+
+fn add_excluded_path(set: &mut HashSet<PathBuf>, path: PathBuf) {
+    match std::fs::canonicalize(&path) {
+        Ok(c) => {
+            set.insert(c);
+        }
+        Err(_) => {
+            set.insert(path);
+        }
+    }
+}
+
 fn pointer_might_be_inline_graphql(pointer: &str) -> bool {
     let s = pointer.trim_start_matches("./").trim_start();
     let Some(first) = s.split_whitespace().next() else {
@@ -109,25 +132,34 @@ async fn load_documents_for_pointers(
         }
     }
 
-    // Apply excludes (best-effort). Upstream derives an `ignore` list from generates outputs.
+    // Apply excludes (best-effort). Mirrors `load.ts` → `ignore` passed to `loadDocuments` from
+    // `graphql-codegen-cli` (concrete output paths + user `!` negations, which may be globs).
     if !exclude.is_empty() {
-        let mut excluded: Vec<PathBuf> = Vec::new();
+        let mut excluded: HashSet<PathBuf> = HashSet::new();
         for ex in exclude {
             let ex = ex.strip_prefix("./").unwrap_or(&ex).to_string();
-            let walker = GlobWalkerBuilder::from_patterns(cwd, &[ex.as_str()])
-                .follow_links(true)
-                .file_type(globwalk::FileType::FILE)
-                .build()
-                .with_context(|| {
-                    format!("failed to build glob walker for ignore pointer `{ex}`")
-                })?;
-            for entry in walker.into_iter().flatten() {
-                excluded.push(entry.path().to_path_buf());
+            if pointer_needs_glob_walk(&ex) {
+                let walker = GlobWalkerBuilder::from_patterns(cwd, &[ex.as_str()])
+                    .follow_links(true)
+                    .file_type(globwalk::FileType::FILE)
+                    .build()
+                    .with_context(|| {
+                        format!("failed to build glob walker for ignore pointer `{ex}`")
+                    })?;
+                for entry in walker.into_iter().flatten() {
+                    add_excluded_path(&mut excluded, entry.path().to_path_buf());
+                }
+            } else {
+                let candidate = cwd.join(&ex);
+                if candidate.is_file() {
+                    add_excluded_path(&mut excluded, candidate);
+                }
             }
         }
-        excluded.sort();
-        excluded.dedup();
-        files.retain(|p| !excluded.contains(p));
+        files.retain(|p| {
+            let key = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
+            !excluded.contains(&key) && !excluded.contains(p)
+        });
     }
 
     files.sort();

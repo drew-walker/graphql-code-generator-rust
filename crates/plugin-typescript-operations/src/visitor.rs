@@ -145,7 +145,9 @@ pub(crate) fn output_field(
 pub struct TypeScriptDocumentsVisitor<'a> {
     pub(crate) config: &'a TypeScriptDocumentsPluginConfig,
     documents: &'a [DocumentFile],
-    types_by_name: HashMap<String, Value>,
+    /// Borrowed from `schema.introspection` — do not clone the whole introspection `types` array
+    /// per run (that was accidentally ~O(schema JSON size) per output).
+    types_by_name: HashMap<String, &'a Value>,
 }
 
 pub(crate) struct CollectSelectionsCtx<'a> {
@@ -166,7 +168,7 @@ impl<'a> TypeScriptDocumentsVisitor<'a> {
         if let Some(arr) = schema.introspection.get("types").and_then(|t| t.as_array()) {
             for t in arr {
                 if let Some(name) = t.get("name").and_then(|n| n.as_str()) {
-                    types_by_name.insert(name.to_string(), t.clone());
+                    types_by_name.insert(name.to_string(), t);
                 }
             }
         }

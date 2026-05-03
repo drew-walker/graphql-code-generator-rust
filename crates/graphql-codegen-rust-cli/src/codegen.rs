@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use crate::config::CodegenContext;
 use crate::load::load_documents;
 use plugin_helpers::types::{Config, FileOutput, OutputConfig};
@@ -23,7 +25,15 @@ pub async fn execute_codegen(context: &mut CodegenContext) -> ExecuteCodegenOutp
         }
     };
 
-    let ignore_documents: Vec<String> = config.generates.keys().cloned().collect();
+    // `packages/graphql-codegen-cli/src/load.ts` `loadDocuments`: `ignore` is built from
+    // `Object.keys(config.generates)` but **skips** entries where `path.extname(generatePath) === ''`
+    // (directory / preset roots, not a concrete output file).
+    let ignore_documents: Vec<String> = config
+        .generates
+        .keys()
+        .filter(|p| Path::new(p).extension().is_some())
+        .cloned()
+        .collect();
 
     for (filename, output_config) in generates {
         // TS executeCodegen per-output pipeline: load schema → load documents → generate.
