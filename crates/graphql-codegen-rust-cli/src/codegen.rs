@@ -2,6 +2,7 @@ use std::path::Path;
 
 use crate::config::CodegenContext;
 use crate::load::load_documents;
+use crate::relay_optimize;
 use plugin_helpers::types::{Config, FileOutput, OutputConfig};
 use plugin_helpers::utils::{merge_complex_plugin_output, merge_outputs};
 
@@ -100,9 +101,25 @@ pub async fn execute_codegen(context: &mut CodegenContext) -> ExecuteCodegenOutp
                             output_config.config.clone(),
                         ))
                         .unwrap_or_default();
+                    let mut ops_documents = documents.clone();
+                    if ops_config.flatten_generated_types {
+                        ops_documents = match relay_optimize::optimize_operations(
+                            &schema_input,
+                            &ops_documents,
+                            ops_config.flatten_generated_types_include_fragments,
+                        ) {
+                            Ok(documents) => documents,
+                            Err(e) => {
+                                return ExecuteCodegenOutput {
+                                    result,
+                                    error: Some(e),
+                                };
+                            }
+                        };
+                    }
                     match plugin_typescript_operations::plugin(
                         &schema_input,
-                        &documents,
+                        &ops_documents,
                         &ops_config,
                     ) {
                         Ok(out) => merge_complex_plugin_output(&mut merged, out),

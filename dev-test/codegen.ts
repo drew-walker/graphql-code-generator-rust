@@ -95,12 +95,12 @@ const config: CodegenConfig = {
       config: { preResolveTypes: true, onlyOperationTypes: true },
       plugins: ['typescript', 'typescript-operations'],
     },
-  //   './dev-test/githunt/types.flatten.preResolveTypes.ts': {
-  //     schema: './dev-test/githunt/schema.json',
-  //     documents: './dev-test/githunt/**/*.graphql',
-  //     config: { preResolveTypes: true, flattenGeneratedTypes: true },
-  //     plugins: ['typescript', 'typescript-operations'],
-  //   },
+    './dev-test/githunt/types.flatten.preResolveTypes.ts': {
+      schema: './dev-test/githunt/schema.json',
+      documents: './dev-test/githunt/**/*.graphql',
+      config: { preResolveTypes: true, flattenGeneratedTypes: true },
+      plugins: ['typescript', 'typescript-operations'],
+    },
     './dev-test/githunt/types.enumsAsTypes.ts': {
       schema: './dev-test/githunt/schema.json',
       documents: './dev-test/githunt/**/*.graphql',

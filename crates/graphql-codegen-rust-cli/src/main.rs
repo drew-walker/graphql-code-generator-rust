@@ -8,6 +8,7 @@ mod generate_and_save;
 mod hooks;
 mod init;
 mod load;
+mod relay_optimize;
 mod utils;
 
 use cli::{Command, run_cli};

@@ -21,7 +21,7 @@ pub struct TypeScriptDocumentsPluginConfig {
     /// Mirrors upstream `noExport` (omit `export` on generated operation types).
     #[serde(default)]
     pub no_export: bool,
-    /// Mirrors upstream `flattenGeneratedTypes` (not implemented yet; reserved for parity).
+    /// Mirrors upstream `flattenGeneratedTypes` (CLI runs Rust `optimize_operations` first).
     #[serde(default)]
     pub flatten_generated_types: bool,
     /// Mirrors upstream `flattenGeneratedTypesIncludeFragments`.

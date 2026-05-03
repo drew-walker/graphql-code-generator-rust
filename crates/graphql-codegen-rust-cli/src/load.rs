@@ -2,13 +2,13 @@
 //! (`loadSchema` / `loadDocuments`). Schema from JSON, SDL (via Node), or JS; documents from globs
 //! or inline GraphQL strings (same as upstream `loadDocuments` + `@graphql-tools/load`).
 
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result};
 use globwalk::GlobWalkerBuilder;
 use plugin_helpers::schema_input::SchemaGenerationInput;
 use plugin_helpers::types::DocumentFile;
 use serde_json::Value;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 /// Loads a GraphQL schema from string pointers (paths relative to `cwd`), matching the
 /// single-string-pointer case of TS `loadSchema` / `context.loadSchema`.
