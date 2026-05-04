@@ -8,6 +8,7 @@ pub struct TypeScriptOperationVariablesToObject<'a> {
     pub is_enum: &'a dyn Fn(&str) -> bool,
     pub is_scalar: &'a dyn Fn(&str) -> bool,
     pub immutable_types: bool,
+    pub type_prefix: &'a str,
 }
 
 impl<'a> TypeScriptOperationVariablesToObject<'a> {
@@ -15,11 +16,13 @@ impl<'a> TypeScriptOperationVariablesToObject<'a> {
         is_enum: &'a dyn Fn(&str) -> bool,
         is_scalar: &'a dyn Fn(&str) -> bool,
         immutable_types: bool,
+        type_prefix: &'a str,
     ) -> Self {
         Self {
             is_enum,
             is_scalar,
             immutable_types,
+            type_prefix,
         }
     }
 
@@ -35,22 +38,37 @@ impl<'a> TypeScriptOperationVariablesToObject<'a> {
         format!("Scalars['{name}']['input']")
     }
 
+    fn qualify_type_name(&self, name: &str) -> String {
+        format!("{}{name}", self.type_prefix)
+    }
+
+    fn qualified_scalar_input_ts(&self, name: &str) -> String {
+        format!("{}{}", self.type_prefix, Self::scalar_input_ts(name))
+    }
+
+    fn input_maybe(&self, inner: impl AsRef<str>) -> String {
+        format!("{}InputMaybe<{}>", self.type_prefix, inner.as_ref())
+    }
+
+    fn exact(&self, inner: impl AsRef<str>) -> String {
+        format!("{}Exact<{}>", self.type_prefix, inner.as_ref())
+    }
+
     fn input_ts(&self, type_ref: &TypeRef) -> String {
         match type_ref {
             TypeRef::NonNull(inner) => self.input_ts(inner),
             TypeRef::List(inner) => {
                 format!("{}<{}>", self.list_wrapper(), self.input_ts(inner))
             }
-            TypeRef::Named(name) => format!(
-                "InputMaybe<{}>",
+            TypeRef::Named(name) => {
                 if (self.is_enum)(name) {
-                    name.clone()
+                    self.input_maybe(self.qualify_type_name(name))
                 } else if (self.is_scalar)(name) {
-                    Self::scalar_input_ts(name)
+                    self.input_maybe(self.qualified_scalar_input_ts(name))
                 } else {
-                    name.clone()
+                    self.input_maybe(self.qualify_type_name(name))
                 }
-            ),
+            }
         }
     }
 
@@ -63,30 +81,27 @@ impl<'a> TypeScriptOperationVariablesToObject<'a> {
                 }
                 TypeRef::Named(name) => {
                     if (self.is_enum)(name) {
-                        name.clone()
+                        self.qualify_type_name(name)
                     } else if (self.is_scalar)(name) {
-                        Self::scalar_input_ts(name)
+                        self.qualified_scalar_input_ts(name)
                     } else {
-                        name.clone()
+                        self.qualify_type_name(name)
                     }
                 }
                 TypeRef::NonNull(_) => self.input_ts(inner),
             },
-            TypeRef::List(inner) => format!(
-                "InputMaybe<{}<{}>>",
-                self.list_wrapper(),
-                self.input_ts(inner)
-            ),
-            TypeRef::Named(name) => format!(
-                "InputMaybe<{}>",
+            TypeRef::List(inner) => {
+                self.input_maybe(format!("{}<{}>", self.list_wrapper(), self.input_ts(inner)))
+            }
+            TypeRef::Named(name) => {
                 if (self.is_enum)(name) {
-                    name.clone()
+                    self.input_maybe(self.qualify_type_name(name))
                 } else if (self.is_scalar)(name) {
-                    Self::scalar_input_ts(name)
+                    self.input_maybe(self.qualified_scalar_input_ts(name))
                 } else {
-                    name.clone()
+                    self.input_maybe(self.qualify_type_name(name))
                 }
-            ),
+            }
         };
         (optional, ts)
     }
@@ -127,16 +142,16 @@ impl<'a> TypeScriptOperationVariablesToObject<'a> {
         }
 
         if vars.is_empty() {
-            return "Exact<{ [key: string]: never }>".to_string();
+            return self.exact("{ [key: string]: never }");
         }
 
         let mut inner = String::new();
-        inner.push_str("Exact<{\n");
+        inner.push_str("{\n");
         for (name, (opt, ts)) in vars {
             let q = if opt && !avoid_optionals { "?" } else { "" };
             inner.push_str(&format!("  {name}{q}: {ts};\n"));
         }
-        inner.push_str("}>");
-        inner
+        inner.push('}');
+        self.exact(inner)
     }
 }

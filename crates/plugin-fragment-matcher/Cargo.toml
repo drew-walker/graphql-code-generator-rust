@@ -1,0 +1,10 @@
+[package]
+name = "plugin-fragment-matcher"
+version = "0.0.1"
+edition = { workspace = true }
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+plugin-helpers = { path = "../plugin-helpers" }

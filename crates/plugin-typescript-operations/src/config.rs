@@ -10,6 +10,8 @@ use serde::Deserialize;
 pub struct TypeScriptDocumentsPluginConfig {
     pub global_namespace: bool,
     pub add_operation_export: bool,
+    #[serde(alias = "baseTypesPath")]
+    pub import_operation_types_from: Option<String>,
     /// Mirrors upstream `printFieldsOnNewLines` (default false).
     pub print_fields_on_new_lines: bool,
     /// Mirrors upstream `avoidOptionals` for operation result and variables shapes.

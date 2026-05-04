@@ -1,7 +1,10 @@
 use anyhow::{Context as _, Result};
 use clap::{ArgAction, Args};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
+use crate::js_plugin_bridge::JsPluginHost;
+use crate::utils::debugging::{debug_event, debug_timing};
 use plugin_helpers::profiler::{Profiler, create_noop_profiler, create_profiler};
 use plugin_helpers::schema_input::SchemaGenerationInput;
 use plugin_helpers::types::{Config, PluginContext, WatchValue};
@@ -31,6 +34,12 @@ pub struct CliFlags {
     /// Modules to preload (Node's `--require` equivalent).
     #[arg(long, action = ArgAction::Append)]
     pub require: Vec<String>,
+
+    /// Comma-separated plugin names to run natively in Rust (e.g. `--native-plugins=add,typescript`).
+    ///
+    /// Defaults to JS for all plugins; only listed plugins opt into native execution.
+    #[arg(long, value_delimiter = ',', action = ArgAction::Append)]
+    pub native_plugins: Vec<String>,
 
     /// Overwrite existing generated files.
     #[arg(long, action = ArgAction::SetTrue)]
@@ -77,7 +86,7 @@ pub struct CliFlags {
     pub import_extension: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct CodegenContext {
     /// Original config passed in (TS: `_config`).
     base_config: Option<Config>,
@@ -94,9 +103,29 @@ pub struct CodegenContext {
     pub profiler: Profiler,
     pub profiler_output: Option<String>,
     pub check_mode_stale_files: Vec<String>,
+    pub js_plugin_host: Option<JsPluginHost>,
 
     /// Keep CLI flags around so we can keep parity with TS' `updateContextWithCliFlags`.
     pub flags: CliFlags,
+}
+
+impl Clone for CodegenContext {
+    fn clone(&self) -> Self {
+        Self {
+            base_config: self.base_config.clone(),
+            resolved_config: self.resolved_config.clone(),
+            project: self.project.clone(),
+            check_mode: self.check_mode,
+            plugin_context: self.plugin_context.clone(),
+            cwd: self.cwd.clone(),
+            filepath: self.filepath.clone(),
+            profiler: create_noop_profiler(),
+            profiler_output: self.profiler_output.clone(),
+            check_mode_stale_files: self.check_mode_stale_files.clone(),
+            js_plugin_host: None,
+            flags: self.flags.clone(),
+        }
+    }
 }
 
 /// Options passed to `loadCodegenConfig`, mirroring `LoadCodegenConfigOptions`.
@@ -371,6 +400,7 @@ impl CodegenContext {
             profiler: create_noop_profiler(),
             profiler_output: None,
             check_mode_stale_files: vec![],
+            js_plugin_host: None,
             flags,
         }
     }
@@ -399,7 +429,26 @@ impl CodegenContext {
         pointers: &[String],
         timing_enabled: bool,
     ) -> Result<SchemaGenerationInput> {
-        crate::load::load_schema_with_timing(&self.cwd, pointers, timing_enabled).await
+        graphql_tools_load::load_schema_with_timing(&self.cwd, pointers, timing_enabled).await
+    }
+
+    pub async fn js_plugin_host(&mut self, timing_enabled: bool) -> Result<&mut JsPluginHost> {
+        if self.js_plugin_host.is_none() {
+            let started = Instant::now();
+            debug_event(
+                timing_enabled,
+                format!(
+                    "starting persistent JS plugin host in {}",
+                    self.cwd.display()
+                ),
+            );
+            self.js_plugin_host = Some(JsPluginHost::spawn(&self.cwd).await?);
+            debug_timing(timing_enabled, "spawn persistent JS plugin host", started);
+        }
+        Ok(self
+            .js_plugin_host
+            .as_mut()
+            .expect("js plugin host initialized"))
     }
 
     pub fn get_config(&mut self) -> Config {

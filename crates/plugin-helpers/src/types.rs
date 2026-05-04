@@ -3,7 +3,7 @@ use std::fmt;
 
 use graphql_parser::query::Document;
 use serde::de::{self, SeqAccess, Visitor};
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 /// Mirrors `Types.DocumentNode` (GraphQL AST).
@@ -65,14 +65,14 @@ where
 
 /// Mirrors `HooksConfig` from `@graphql-codegen/plugin-helpers`.
 /// Flexible enough to accept any JSON object (hooks are keyed by lifecycle name).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct HooksConfig {
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Rough stand-in for `Types.PluginContext` from `@graphql-codegen/plugin-helpers`.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct PluginContext(pub HashMap<String, serde_json::Value>);
 
 /// Mirrors `Types.ComplexPluginOutput` from `@graphql-codegen/plugin-helpers`.
@@ -104,11 +104,12 @@ pub struct ConfiguredOutput {
     /// Mirrors TS plugin entries: strings or `{ [name: string]: object }`.
     pub plugins: Vec<PluginSpec>,
     pub preset: Option<String>,
+    pub preset_config: serde_json::Map<String, serde_json::Value>,
     pub config: serde_json::Map<String, serde_json::Value>,
     pub hooks: HooksConfig,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum PluginSpec {
     Name(String),

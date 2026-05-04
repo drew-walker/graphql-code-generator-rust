@@ -387,10 +387,8 @@ fn should_overwrite(config: &Config, output_path: &str) -> bool {
     let global_value = config.overwrite.unwrap_or(true);
 
     let Some(output_config) = config.generates.get(output_path) else {
-        debug_log_if(
-            debug_enabled_from_config(config),
-            format!("Couldn't find a config of {}", output_path),
-        );
+        // Near-operation-file preset emits derived output paths that are not direct
+        // keys in `config.generates`; fallback to global overwrite without logging.
         return global_value;
     };
 

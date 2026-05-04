@@ -19,8 +19,12 @@ base64 = { workspace = true }
 globwalk = { workspace = true }
 graphql-parser = { workspace = true }
 dotenvy = { workspace = true }
+graphql-tools-load = { path = "../graphql-tools-load" }
 plugin-helpers = { path = "../plugin-helpers" }
+plugin-fragment-matcher = { path = "../plugin-fragment-matcher" }
+plugin-typescript-react-apollo = { path = "../plugin-typescript-react-apollo" }
 plugin-typescript = { path = "../plugin-typescript" }
 plugin-typescript-operations = { path = "../plugin-typescript-operations" }
 plugin-typed-document-node = { path = "../plugin-typed-document-node" }
+visitor-plugin-common = { path = "../visitor-plugin-common" }
 apollo-compiler = { workspace = true }

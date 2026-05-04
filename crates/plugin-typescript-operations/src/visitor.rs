@@ -70,12 +70,12 @@ fn to_pascal_case(name: &str) -> String {
     out
 }
 
-pub(crate) fn scalar_output_ts(name: &str) -> String {
+pub(crate) fn scalar_output_ts(name: &str, type_prefix: &str) -> String {
     match name {
         "ID" | "String" => "string".to_string(),
         "Boolean" => "boolean".to_string(),
         "Int" | "Float" => "number".to_string(),
-        other => format!("Scalars['{other}']['output']"),
+        other => format!("{type_prefix}Scalars['{other}']['output']"),
     }
 }
 
@@ -194,6 +194,14 @@ impl<'a> TypeScriptDocumentsVisitor<'a> {
         }
     }
 
+    pub(crate) fn type_prefix(&self) -> &'static str {
+        if self.config.import_operation_types_from.is_some() {
+            "Types."
+        } else {
+            ""
+        }
+    }
+
     pub fn generate(&self) -> Result<ComplexPluginOutput> {
         let all_documents = self.merge_documents(false);
         let documents_to_visit = self.merge_documents(true);
@@ -295,8 +303,12 @@ impl<'a> TypeScriptDocumentsVisitor<'a> {
 
     pub fn get_imports(&self) -> Vec<String> {
         // Upstream `getImports()` depends on `inlineFragmentTypes` / fragmentImports.
-        // We expose the method for parity; return empty until those config surfaces are ported.
-        vec![]
+        // We expose the method for parity; only external operation type imports are needed now.
+        self.config
+            .import_operation_types_from
+            .as_ref()
+            .map(|path| vec![format!("import type * as Types from '{path}';")])
+            .unwrap_or_default()
     }
 
     pub fn get_global_declarations(&self, _no_export: bool) -> Vec<String> {
@@ -329,6 +341,7 @@ impl<'a> TypeScriptDocumentsVisitor<'a> {
             &is_enum,
             &is_scalar,
             self.config.immutable_types,
+            self.type_prefix(),
         );
         Ok(transformer.transform_operation_variables(op, self.config.avoid_optionals))
     }

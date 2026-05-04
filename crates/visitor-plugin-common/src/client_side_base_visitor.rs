@@ -489,6 +489,10 @@ fn fragment_definition_to_json(f: &FragmentDefinition<'static, String>) -> serde
     let mut m = Map::new();
     m.insert("kind".to_string(), json!("FragmentDefinition"));
     m.insert("name".to_string(), name_to_json(&f.name));
+    m.insert(
+        "directives".to_string(),
+        JsonValue::Array(f.directives.iter().map(directive_to_json).collect()),
+    );
     m.insert("typeCondition".to_string(), named_type_to_json(type_name));
     m.insert(
         "selectionSet".to_string(),
@@ -506,17 +510,19 @@ fn operation_definition_to_json(op: &OperationDefinition<'static, String>) -> se
             if let Some(name) = &q.name {
                 m.insert("name".to_string(), name_to_json(name));
             }
-            if !q.variable_definitions.is_empty() {
-                m.insert(
-                    "variableDefinitions".to_string(),
-                    JsonValue::Array(
-                        q.variable_definitions
-                            .iter()
-                            .map(variable_definition_to_json)
-                            .collect(),
-                    ),
-                );
-            }
+            m.insert(
+                "variableDefinitions".to_string(),
+                JsonValue::Array(
+                    q.variable_definitions
+                        .iter()
+                        .map(variable_definition_to_json)
+                        .collect(),
+                ),
+            );
+            m.insert(
+                "directives".to_string(),
+                JsonValue::Array(q.directives.iter().map(directive_to_json).collect()),
+            );
             m.insert(
                 "selectionSet".to_string(),
                 selection_set_to_json(&q.selection_set),
@@ -530,18 +536,20 @@ fn operation_definition_to_json(op: &OperationDefinition<'static, String>) -> se
             if let Some(name) = &mutation.name {
                 m.insert("name".to_string(), name_to_json(name));
             }
-            if !mutation.variable_definitions.is_empty() {
-                m.insert(
-                    "variableDefinitions".to_string(),
-                    JsonValue::Array(
-                        mutation
-                            .variable_definitions
-                            .iter()
-                            .map(variable_definition_to_json)
-                            .collect(),
-                    ),
-                );
-            }
+            m.insert(
+                "variableDefinitions".to_string(),
+                JsonValue::Array(
+                    mutation
+                        .variable_definitions
+                        .iter()
+                        .map(variable_definition_to_json)
+                        .collect(),
+                ),
+            );
+            m.insert(
+                "directives".to_string(),
+                JsonValue::Array(mutation.directives.iter().map(directive_to_json).collect()),
+            );
             m.insert(
                 "selectionSet".to_string(),
                 selection_set_to_json(&mutation.selection_set),
@@ -555,17 +563,19 @@ fn operation_definition_to_json(op: &OperationDefinition<'static, String>) -> se
             if let Some(name) = &sub.name {
                 m.insert("name".to_string(), name_to_json(name));
             }
-            if !sub.variable_definitions.is_empty() {
-                m.insert(
-                    "variableDefinitions".to_string(),
-                    JsonValue::Array(
-                        sub.variable_definitions
-                            .iter()
-                            .map(variable_definition_to_json)
-                            .collect(),
-                    ),
-                );
-            }
+            m.insert(
+                "variableDefinitions".to_string(),
+                JsonValue::Array(
+                    sub.variable_definitions
+                        .iter()
+                        .map(variable_definition_to_json)
+                        .collect(),
+                ),
+            );
+            m.insert(
+                "directives".to_string(),
+                JsonValue::Array(sub.directives.iter().map(directive_to_json).collect()),
+            );
             m.insert(
                 "selectionSet".to_string(),
                 selection_set_to_json(&sub.selection_set),
@@ -584,6 +594,9 @@ fn variable_definition_to_json(v: &VariableDefinition<'static, String>) -> serde
         json!({ "kind": "Variable", "name": { "kind": "Name", "value": v.name } }),
     );
     m.insert("type".to_string(), type_to_json(&v.var_type));
+    if let Some(default_value) = &v.default_value {
+        m.insert("defaultValue".to_string(), value_to_json(default_value));
+    }
     JsonValue::Object(m)
 }
 
@@ -622,6 +635,10 @@ fn selection_to_json(sel: &Selection<'static, String>) -> serde_json::Value {
             let mut m = Map::new();
             m.insert("kind".to_string(), json!("FragmentSpread"));
             m.insert("name".to_string(), name_to_json(&spread.fragment_name));
+            m.insert(
+                "directives".to_string(),
+                JsonValue::Array(spread.directives.iter().map(directive_to_json).collect()),
+            );
             JsonValue::Object(m)
         }
         Selection::InlineFragment(inline) => inline_fragment_to_json(inline),
@@ -635,20 +652,25 @@ fn field_to_json(f: &Field<'static, String>) -> serde_json::Value {
         m.insert("alias".to_string(), name_to_json(alias));
     }
     m.insert("name".to_string(), name_to_json(&f.name));
-    if !f.arguments.is_empty() {
-        let args = f
-            .arguments
-            .iter()
-            .map(|(k, v)| {
-                let mut a = Map::new();
-                a.insert("kind".to_string(), json!("Argument"));
-                a.insert("name".to_string(), name_to_json(k));
-                a.insert("value".to_string(), value_to_json(v));
-                JsonValue::Object(a)
-            })
-            .collect::<Vec<_>>();
-        m.insert("arguments".to_string(), JsonValue::Array(args));
-    }
+    m.insert(
+        "arguments".to_string(),
+        JsonValue::Array(
+            f.arguments
+                .iter()
+                .map(|(k, v)| {
+                    let mut a = Map::new();
+                    a.insert("kind".to_string(), json!("Argument"));
+                    a.insert("name".to_string(), name_to_json(k));
+                    a.insert("value".to_string(), value_to_json(v));
+                    JsonValue::Object(a)
+                })
+                .collect(),
+        ),
+    );
+    m.insert(
+        "directives".to_string(),
+        JsonValue::Array(f.directives.iter().map(directive_to_json).collect()),
+    );
     if !f.selection_set.items.is_empty() {
         m.insert(
             "selectionSet".to_string(),
@@ -665,9 +687,32 @@ fn inline_fragment_to_json(inline: &InlineFragment<'static, String>) -> serde_js
         m.insert("typeCondition".to_string(), named_type_to_json(t));
     }
     m.insert(
+        "directives".to_string(),
+        JsonValue::Array(inline.directives.iter().map(directive_to_json).collect()),
+    );
+    m.insert(
         "selectionSet".to_string(),
         selection_set_to_json(&inline.selection_set),
     );
+    JsonValue::Object(m)
+}
+
+fn directive_to_json(directive: &graphql_parser::query::Directive<'static, String>) -> JsonValue {
+    let mut m = Map::new();
+    m.insert("kind".to_string(), json!("Directive"));
+    m.insert("name".to_string(), name_to_json(&directive.name));
+    let args = directive
+        .arguments
+        .iter()
+        .map(|(k, v)| {
+            let mut a = Map::new();
+            a.insert("kind".to_string(), json!("Argument"));
+            a.insert("name".to_string(), name_to_json(k));
+            a.insert("value".to_string(), value_to_json(v));
+            JsonValue::Object(a)
+        })
+        .collect::<Vec<_>>();
+    m.insert("arguments".to_string(), JsonValue::Array(args));
     JsonValue::Object(m)
 }
 
@@ -683,7 +728,7 @@ fn value_to_json(v: &Value<'static, String>) -> serde_json::Value {
             json!({ "kind": "IntValue", "value": format!("{}", i.as_i64().unwrap_or(0)) })
         }
         Value::Float(f) => json!({ "kind": "FloatValue", "value": format!("{}", f) }),
-        Value::String(s) => json!({ "kind": "StringValue", "value": s }),
+        Value::String(s) => json!({ "kind": "StringValue", "value": s, "block": false }),
         Value::Boolean(b) => json!({ "kind": "BooleanValue", "value": b }),
         Value::Null => json!({ "kind": "NullValue" }),
         Value::Enum(e) => json!({ "kind": "EnumValue", "value": e }),

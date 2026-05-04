@@ -77,10 +77,10 @@ pub(crate) fn selection_set_object_ts(
         if let Some((type_ref, merged_ss)) = links.remove(&name) {
             let base_ts_for_named = |tn: &str| -> Result<String> {
                 if v.is_scalar(tn) {
-                    return Ok(scalar_output_ts(tn));
+                    return Ok(scalar_output_ts(tn, v.type_prefix()));
                 }
                 if v.is_enum(tn) {
-                    return Ok(tn.to_string());
+                    return Ok(format!("{}{tn}", v.type_prefix()));
                 }
                 selection_set_object_ts(v, tn, &merged_ss, fragments)
             };
@@ -145,10 +145,10 @@ pub(crate) fn collect_selections_into(
                 if f.selection_set.items.is_empty() {
                     let base_ts_for_named = |tn: &str| -> Result<String> {
                         if v.is_scalar(tn) {
-                            return Ok(scalar_output_ts(tn));
+                            return Ok(scalar_output_ts(tn, v.type_prefix()));
                         }
                         if v.is_enum(tn) {
-                            return Ok(tn.to_string());
+                            return Ok(format!("{}{tn}", v.type_prefix()));
                         }
                         Ok("any".to_string())
                     };

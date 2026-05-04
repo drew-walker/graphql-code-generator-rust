@@ -60,12 +60,7 @@ pub fn plugin(
     }
 
     // Upstream prepends imports + global declarations.
-    out.prepend = [
-        visitor.get_imports(),
-        visitor.get_global_declarations(false),
-        out.prepend,
-    ]
-    .concat();
+    out.prepend = [visitor.get_global_declarations(false), out.prepend].concat();
 
     Ok(out)
 }

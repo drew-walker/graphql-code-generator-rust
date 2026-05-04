@@ -7,7 +7,7 @@ mod config;
 mod generate_and_save;
 mod hooks;
 mod init;
-mod load;
+mod js_plugin_bridge;
 mod relay_optimize;
 #[path = "local_plugins/mod.rs"]
 mod transitional_plugins;

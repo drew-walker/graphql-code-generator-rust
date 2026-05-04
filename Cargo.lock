@@ -661,17 +661,21 @@ dependencies = [
  "dotenvy",
  "globwalk",
  "graphql-parser",
+ "graphql-tools-load",
  "inquire",
  "pathdiff",
+ "plugin-fragment-matcher",
  "plugin-helpers",
  "plugin-typed-document-node",
  "plugin-typescript",
  "plugin-typescript-operations",
+ "plugin-typescript-react-apollo",
  "serde",
  "serde_json",
  "sha1",
  "tokio",
  "ureq",
+ "visitor-plugin-common",
  "yaml_serde",
 ]
 
@@ -683,6 +687,19 @@ checksum = "7a818c0d883d7c0801df27be910917750932be279c7bc82dc541b8769425f409"
 dependencies = [
  "combine",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "graphql-tools-load"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "apollo-compiler",
+ "globwalk",
+ "graphql-parser",
+ "plugin-helpers",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -974,6 +991,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
+name = "plugin-fragment-matcher"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "plugin-helpers",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "plugin-helpers"
 version = "0.0.1"
 dependencies = [
@@ -1014,6 +1041,19 @@ dependencies = [
  "graphql-parser",
  "plugin-helpers",
  "plugin-typescript",
+ "serde",
+ "serde_json",
+ "visitor-plugin-common",
+]
+
+[[package]]
+name = "plugin-typescript-react-apollo"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "graphql-parser",
+ "plugin-helpers",
+ "plugin-typescript-operations",
  "serde",
  "serde_json",
  "visitor-plugin-common",

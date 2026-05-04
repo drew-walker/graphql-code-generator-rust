@@ -64,6 +64,11 @@ pub fn combined_output(introspection: &Value) -> String {
     out
 }
 
+pub fn resolvers_output(introspection: &Value) -> String {
+    let objects = schema_object_types(introspection);
+    resolvers::output(introspection, &objects)
+}
+
 fn flow_type_ref(type_ref: &Value, nested: bool) -> String {
     match type_ref.get("kind").and_then(|v| v.as_str()).unwrap_or("") {
         "NON_NULL" => flow_type_ref(type_ref.get("ofType").unwrap_or(&Value::Null), true),
